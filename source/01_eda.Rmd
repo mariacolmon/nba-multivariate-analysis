@@ -1,0 +1,479 @@
+---
+title: "First Task: Data description"
+author: "María Colado Montañés and Luis Calderón Yunda"
+output:
+  pdf_document:
+    number_sections: true
+    toc: true
+    toc_depth: 2
+fontsize: 11pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+# Load required libraries
+library(tidyverse)
+library(GGally)
+library(patchwork) # equivalent to par(mfrow) using ggplot2
+library(kableExtra) # table formatting
+library(knitr)
+```
+
+# Introduction
+
+The original dataset **`all_seasons.csv`** used for this assignment was found on *[Kaggle](https://www.kaggle.com/datasets/justinas/nba-players-data)*, it contains over two decades of data on each player who has been part of an NBA teams' roster, leading to nearly 13.000 rows. The raw dataset consisted of 22 features, which included physical attributes (age, height, weight), career information (team, draft year, draft round) and some basic game statistics (average points, rebounds, assists) among others.
+
+In order to reduce the number of observations, our analysis will focus exclusively on the 2022-23 season. Similarly, to reduce the number of features, we decided to keep the following ones:
+
+- `player_name` : Name of the player
+- `team_abbreviation` : Abbreviated name of the team the player played for (30 different teams)
+- `player_age`: Age of the player
+- `player_height`: Height of the player in cm
+- `player_weight`: Weight of the player in kg
+- `country`: Name of the country the player was born in
+
+The NBA Draft is an annual event that takes place before the season starts, allowing teams to select new players to join the league. This process is divided into 2 rounds, from all candidates just 60 players are finally chosen. It is the way how players with no prior experience coming from college or international leagues enter the NBA. With this in mind, we use the variables:
+
+- `draft_year`: The year the player was drafted
+- `draft_number`: The number at which the player was picked in his draft round
+- `gp`: Games played throughout the season
+- `pts`: Average number of points scored
+- `reb`: Average number of rebounds grabbed
+- `ast`: Average number of assists distributed
+- `ts_pct`: Measure of the player's shooting efficiency that takes into account free throws, 2 and 3 point shots.
+
+# Data preprocessing
+
+In order to meet the specifications for the mixed-type multivariate dataset we needed to do some data preprocessing. For example, after filtering the data by the most recent season, we obtained a total of 539 players. However, in order to make use of the `draft_year` variable, it was necessary to handle the presence of *Undrafted* players. As a result, the 134 players labeled as *Undrafted* were removed. The next step was to analyse the `draft_number` feature. We identified 3 additional players who still had an *Undrafted value*, meaning that although they had an assigned `draft_year`, they were ultimately not selected in the draft. Consequently, these players were also removed, resulting in a clean dataset of 402 players with no NA values.
+
+## Binary variables
+
+- `from_US`: this feature was created from the `country` variable, where 1 indicates if the player was born in the US and 0 otherwise
+- `is_tall`: this feature was derived from the `player_height` variable, where a value of 1 indicates that the player's height is greater than the median, and 0 otherwise 
+
+## Multiclass categorical variables 
+
+- `draft_number`: was originally a discrete quantitative variable, but it was transformed into a multiclass categorical feature called `draft_number_cat`, by splitting it into quartiles, resulting in four groups: Veteran (0–25%), Prime (25–50%), Early Prime (50–75%), and Young (75–100%). We interpret this variable as an indicator of tenure, meaning that players from earlier draft years have more experience in the league.
+
+- `pts`: was originally a continuous quantitative variable, but it was transformed into a qualitative ordinal variable (`sc_level`) using tertiles, resulting in three levels: Low (0–33%), Medium (33–66%), and High (66–100%).
+
+# Data description
+
+```{r, echo = FALSE}
+# Load data
+file_data = 'nba_23_final.csv'
+data_nba = read.csv(file_data)
+column_names = colnames(data_nba)
+var_cualit = c('player_name',"team_abbreviation","country","from_US","draft_year_cat","is_tall","sc_level")
+var_quant = column_names[!(column_names %in% var_cualit)]
+
+data_nba_quant = data_nba[,var_quant]
+colnames(data_nba_quant)[c(2:4)] = c('p_height','p_weight','rank')
+colnames(data_nba_quant)[c(5:9)] = c('s_gp','s_pts','s_reb','s_ast','ts_pct')
+
+```
+
+## Summary
+
+We begin our exploratory data analysis with a summary statistics of the **quantitative variables**, Table 1 shows that they have very different scales. This was expected, as our features are measured in very different units (kg, cm, points per game, percentages, etc.). For example, points, rebounds and assists vary on a much larger scale than variables such as true shooting percentage or age.
+
+
+```{r, echo = FALSE}
+data_nba_quant_tab = data_nba[,var_quant]
+sx <- summary(data_nba_quant_tab)
+
+# Convert summary (list) into wide data frame
+sx_df <- as.data.frame.matrix(sx)
+
+# Clean values: remove "Min.:", "Mean :", etc.
+sx_clean <- as.data.frame(apply(sx_df, 2, function(col) {
+  as.numeric(gsub(".*:", "", col))
+}))
+
+# Add statistic names
+stat_names <- c("Min.", "1st Qu.", "Median", "Mean", "3rd Qu.", "Max.")
+sx_clean$Statistic <- stat_names
+
+# Reorder columns (Statistic first)
+sx_clean <- sx_clean[, c(ncol(sx_clean), 1:(ncol(sx_clean)-1))]
+
+# Create table
+kable(sx_clean, "latex", caption = "Summary of quantitative variables") |>
+  kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    font_size = 8
+  )
+```
+
+Meanwhile, the summary statistics for the **qualitative variables**, shown in Table 2, reveal a a highly balanced league in terms of `draft_year_cat` (ie years of experience) and `sc_level`. Regarding nationality, about 75% of players come from the US, while nearly 60% of the players are consider to be shorter in terms of the `is_tall` variable.
+
+```{r, echo = FALSE}
+data_nba_cate = data_nba[,var_cualit]
+data_nba_cate$draft_year_cat <- factor(data_nba_cate$draft_year_cat, levels = c('Young','Early Prime','Prime','Veteran'))
+data_nba_cate$from_US <- factor(data_nba_cate$from_US)
+data_nba_cate$is_tall <- factor(data_nba_cate$is_tall)
+data_nba_cate$sc_level <- factor(data_nba_cate$sc_level, levels = c('Low','Medium','High'))
+
+data_nba_cat_ = data_nba_cate[,c('draft_year_cat','sc_level','from_US','is_tall')]
+
+```
+
+
+
+```{r, echo= FALSE}
+
+sx_cat <- summary(data_nba_cat_)
+sx_cat_df <- as.data.frame.matrix(sx_cat)
+
+# Replace NA with blank
+sx_cat_df[is.na(sx_cat_df)] <- ""
+
+# Remove ghost row names column
+rownames(sx_cat_df) <- NULL
+
+kable(sx_cat_df, "latex", caption = "Summary of categorical variables") |>
+  kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    font_size = 8
+  )
+```
+
+## Boxplots
+
+Recall the problem about variance comparison across quantitative variables, as can be seen in the left-hand side plot. To adress this issue normalization is applied, resulting in the right-hand plot. Notice that this process does not change the shape of the distributions, only the scale of the data. Therefore, patterns in the original data, such as skewness, dispersion, or outliers are preserved, while enabling meaningful comparison between different variables.
+
+```{r, echo = FALSE}
+
+## NORMALIZATION
+n = nrow(data_nba_quant)
+p = ncol(data_nba_quant)
+  
+mean_cols = sapply(data_nba_quant,mean)
+var_cols = sapply(data_nba_quant,var)
+sd_cols = sqrt(var_cols)
+
+data_cent = sweep(data_nba_quant, 2, mean_cols, FUN = "-")
+data_norm = sweep(data_cent, 2, sd_cols, FUN = "/")
+
+```
+
+```{r, echo = FALSE}
+
+w1 <- data_nba_quant %>%
+  pivot_longer(cols = everything(),
+               names_to = "Variable",
+               values_to = "Valor") %>%
+  ggplot(aes(x = Variable, y = Valor, color = Variable)) +
+  geom_boxplot(alpha = 0.8) +
+  labs(title = "Raw data",
+       x = NULL,
+       y = NULL) +
+  theme(
+    plot.title = element_text(size = 9),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "none"
+  )
+
+
+w2 <- data_norm %>%
+  pivot_longer(cols = everything(),
+               names_to = "Variable",
+               values_to = "Valor") %>%
+  ggplot(aes(x = Variable, y = Valor, color = Variable)) +
+  geom_boxplot(alpha = 0.8) +
+  labs(title = "Normalized data (mean = 0, sd = 1)",
+       x = NULL,
+       y = NULL) +
+  theme(
+    plot.title = element_text(size = 9),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "none"
+  )
+```
+
+
+```{r fig.width=10, fig.height=4, out.width='100%', fig.align='center', echo= FALSE}
+
+combined <- w1 + w2 + 
+  plot_annotation(
+    title = "Distribution and dispersion of quantitative variables",
+    theme = theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5))
+  )
+
+combined
+
+```
+
+In particular, we can observe a small group of players, which could be potentially considered as elite players, exceeding the upper whiskers of the boxplot in variables such as points, assists and rebounds.
+
+These outlier points likely represent the superstars, whose performance is far above the average. Due to the considerable difference between an average player and an elite one, the distribution is naturally right-skewed. We could correct this issue by applying the log(x + 1) transformation, we need to add 1 to avoid issues with players who recorded neither assists nor points during the season.
+
+The resulting distribution becomes much more closer to normal. This transformation mitigates the influence of extreme values and significantly reduces the initial skewness, as can be seen in the following pictures, although it is not strictly necessary for the later analysis.
+
+
+```{r, echo = FALSE}
+
+log1 = data_nba_quant %>%
+  select(s_pts, s_ast) %>%
+  pivot_longer(cols = everything(), 
+               names_to = "Variable", 
+               values_to = "Valor") %>%
+  ggplot(aes(x = Variable, y = Valor, color = Variable)) +
+  geom_boxplot(alpha = 0.8) + 
+  geom_jitter(alpha = 0.2, width = .2) + 
+  
+  scale_x_discrete(labels = c(
+    "s_pts" = "Avg. Points",      
+    "s_ast" = "Avg. Assists"
+  )) +
+  
+  labs(title = "Raw data distribution",
+       y = 'X',
+       x = NULL) +
+  
+  theme(
+    plot.title = element_text(size = 10, face = "bold"),
+    legend.position = "none" 
+  )
+
+log2 = data_nba_quant %>%
+  select(s_pts,s_ast) %>%
+  pivot_longer(cols = everything(), 
+               names_to = "Variable", 
+               values_to = "Valor") %>%
+  ggplot(aes(x = Variable, y = log(Valor + 1),color = Variable)) + 
+  geom_boxplot(alpha = 0.8) +
+  geom_jitter(alpha = 0.2,width=.2) +
+  
+  scale_x_discrete(labels = c(
+    "s_pts" = "Avg. Points",  
+    "s_ast" = "Avg. Assists"
+  )) +
+  
+  labs(title = "Logarithmic Transformation",
+       y = "Log(X+1)",
+       x = NULL)+
+  theme(
+    plot.title = element_text(size = 10, face = "bold"),
+    legend.position = "none" 
+  )
+```
+
+
+```{r fig.width=10, fig.height=4, out.width='100%', fig.align='center', echo= FALSE}
+log1 + log2
+```
+
+To look for possible correlation between quantitative variables in our dataset, we generate a pairwise scatterplot. At first glance, a strong **positive linear correlation** highlights between players’ anthropometric characteristics, specifically **height and weight**. There is also a moderate **positive correlation between height and rebounds**. This is expected in basketball, as the pivot is usually the tallest and heaviest player, which is responsible for collecting rebounds. Conversely, the opposite pattern is observed with assists: taller players tend to have fewer assists.
+
+## Scatterplots
+
+We will now refer to the group of variables related to a player's number of points, rebounds, and assists as their *performance metrics*. By this approach, we can obtain the following insights:
+
+- *Games played and Performance metrics*:
+Across all combinations, an increasing trend is observed, indicating that players with more games played generally obtain higher values in their statistics. However, variability increases for players who participate in more than 40 games during the season.
+
+- *Rank and Performance metrics*:
+The variable rank shows a weak negative and kind of non linear correlation with all performance statistics. While it does not fully determine a player’s productivity, a clear pattern highlights: players selected in the last positions of the draft (ie high values for draft rank) tend, on average, to perform worse during the season.
+
+- *Performance metrics*:
+In the scatterplots relating performance metrics, what stands out the most is the funnel-shaped pattern and its width, which means that there is some *heterocedasticity* between these variables. There is also a positive association between them. In other words, players with higher values in one metric generally tend to score higher in others, although this relationship might not be linear.
+
+Shooting efficiency is remarkably consistent throughout the league, with most players ranging between 45% and 65%. When compared with other variables, no clearly pattern or correlation is observed. Similarly, the remaining variables show no clear structure or relationship in the data.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+ggpairs(
+  data_nba_quant,
+  progress = FALSE, 
+  diag = list(continuous = wrap("barDiag", fill = "grey", color = "gray54")),
+  
+  upper = list(continuous = wrap("points", 
+                                 color = "royalblue3", 
+                                 alpha = 0.4, 
+                                 size = 0.5)), 
+  
+  lower = list(continuous = wrap("points", 
+                                 color = "royalblue3", 
+                                 alpha = 0.4, 
+                                 size = 0.5))
+) + 
+  
+  labs(title = "Pairwise scatterplot") +
+  theme(
+    axis.text.x = element_text(size = 4),
+    axis.text.y = element_text(size = 4),
+    strip.text = element_text(
+      face = "bold",   
+      size = 6,       
+      color = "black"
+    ),
+    plot.title = element_text(size = 9, face = "bold", hjust = 0.5)
+  )
+```
+
+We can also compute the six indexes $q_i$ to measure intercorrelation among our variables. Recall that Pearson correlation coefficient only detects linear relationships, and the same applies to $q$:
+
+```{r, echo = FALSE}
+intercorrelations <- function(X) {
+  n <- nrow(X)
+  p <- ncol(X)
+  R <- cor(X)
+  q <- numeric(6)
+  lambda <- eigen(R)$values
+  rjj <- diag(solve(R))
+  
+  q[1] <- (1 - min(lambda) / max(lambda))^(p + 2)
+  q[2] <- 1 - p / sum(1 / lambda)
+  q[3] <- 1 - sqrt(det(R))
+  q[4] <- (max(lambda) / p)^(3/2)
+  q[5] <- (1 - min(lambda) / p)^5
+  q[6] <- sum((1 - 1 / rjj) / p)
+
+  return(q)
+}
+q_inter = intercorrelations(data_nba_quant)
+```
+
+
+$$
+q = [0.469, 0.547, 0.841, 0.187, 0.896, 0.466]
+$$
+
+Low values in $q_1$, $q_4$, and $q_5$ may be due to the non-linear relationships previously observed in the scatterplot. We also decided to check if the intercorrelation among all quantitative variables (excluding numeric height) was stable across the `is_tall` binary variable. Overall, the correlations tend to be consistently higher in the taller-player (coded as 1) group than in the shorter-player group (coded as 0).
+
+```{r fig.width=5, fig.height=2.4, fig.align='center',echo = FALSE}
+# Intercorrelations depending on height
+df_points = data_nba[,c('pts','is_tall')]
+
+df_tall_0 = data_nba_quant[df_points$is_tall==0,]
+df_tall_0$p_height = NULL
+inter0 = intercorrelations(df_tall_0)
+df_tall_1 = data_nba_quant[df_points$is_tall==1,]
+df_tall_1$p_height = NULL
+inter1 = intercorrelations(df_tall_1)
+
+df_inter <- data.frame(
+  x = seq_along(inter0),
+  shorter_players = inter0,
+  taller_players = inter1
+)
+
+ggplot(df_inter) +
+  geom_line(aes(x = x, y = shorter_players, color = "shorter players")) +
+  geom_line(aes(x = x, y = taller_players, color = "taller players")) +
+  scale_color_manual(values = c("shorter players" = "skyblue",
+                                "taller players" = "indianred1"),
+                     name = "is_tall")+
+  labs(title = "Evolution of intercorrelation",
+     x = "q",
+     y = "% of intercor") +
+  theme(
+    axis.title.x = element_text(size = 8),
+    axis.title.y = element_text(size = 8),
+    plot.title = element_text(size = 10, face = "bold"),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_text(size = 7),
+    legend.title = element_text(size = 8),
+    legend.text  = element_text(size = 7)
+  )
+
+```
+
+$$
+q_{tall} = [0.53,\; 0.52,\; 0.82,\; 0.22,\; 0.90,\; 0.45]  \quad
+q_{short} = [0.50,\; 0.48,\; 0.72,\; 0.24,\; 0.88,\; 0.38]
+$$
+
+## Heatmap
+
+In the heatmap, the correlation coefficient between `height` and `weight` appears to be the strongest positive one (approximately 0.73), which is consistent with the pattern previously observed in the scatterplot. A similar situation occurs with the correlation between the number of `rebounds` and the player’s anthropometric characteristics, which is moderate (around 0.5). Finally, there is a weak negative correlation (approximately –0.3) between the number of `assists` and variables such as `height`, `weight`, and `rank.` In addition, the correlation between `rank` and `points` is slightly stronger, at around –0.4
+
+
+```{r fig.width=4.4, fig.height=3.5, fig.align='center',echo = FALSE}
+plot_correlation_heatmap_discrete <- function(df, title = "Heatmap for quantitative variables") {
+  corr_mat <- cor(df)
+  corr_df <- corr_mat %>%
+    as.data.frame() %>%
+    mutate(var1 = rownames(.)) %>%
+    pivot_longer(
+      cols = -var1,
+      names_to = "var2",
+      values_to = "correlation"
+    )
+  ggplot(corr_df, aes(x = var1, y = var2, fill = correlation)) +
+    geom_tile() +
+  scale_fill_steps2(
+    low = "red",       
+    mid = "white",      
+    high = "purple",   
+    midpoint = 0,
+    limits = c(-1, 1),
+    breaks = seq(-1, 1, by = 0.2),
+    n.breaks = 12,      
+    name = "Corr"
+  ) +
+    
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1,face = 'bold',size = 6),
+      axis.text.y = element_text(face = 'bold',size = 6),
+      axis.title = element_blank(),
+      legend.title = element_text(size = 8,face = 'bold'),
+      legend.text = element_text(size = 7),
+      plot.title = element_text(size = 9, face = "bold"),
+    ) +
+    
+    guides(fill = guide_colorsteps(
+      barwidth = 1,
+      barheight = 8,
+      show.limits = TRUE
+    )) +
+    
+    labs(title = title)
+}
+
+plot_correlation_heatmap_discrete(data_nba_quant)
+
+```
+
+## Conditional scatterplots
+
+When conditioning the previuos pairwise scatterplot on the categorical variable `draft_year`, an obvious pattern emerges in the first column `Age`. As expected, players classified as Veteran, those with more years of experience in the league, are also the oldest ones.
+
+If we focus on the performance metrics (points, rebounds, assists) and shoot efficiency, we appreciate that the least experienced players, those who have recently joined the NBA (represented by purple and blue points) are predominantly concentrated in the lower ranges of these distributions. In contrast, players in the *Prime and Veteran* categories (green and yellow) tend to take higher values for these metrics. This pattern is consistent with the boxplots where both, quartiles and averages increase progressively with player seniority.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.height=4.85}
+df_cat = data_nba_quant
+df_cat$draft_year_cat = data_nba$draft_year_cat
+df_cat$draft_year_cat <- factor(df_cat$draft_year_cat, levels = c('Young','Early Prime','Prime','Veteran'))
+
+ggpairs(
+  df_cat,
+  mapping = aes(color = draft_year_cat, fill = draft_year_cat), 
+  diag = list(continuous = wrap("densityDiag", alpha = 0.5)),
+  lower = list(continuous = wrap("points", size = 1, alpha = 0.6)),
+  upper = list(continuous = "blank")
+) +
+  scale_color_manual(values = c("#440154", "#1F78B4", "#5DC863", "#DAA520")) +
+  scale_fill_manual(values  = c("#440154", "#1F78B4", "#5DC863", "#DAA520")) +
+  theme(
+    strip.text = element_text(face = "bold", size = 5,color = 'black'),
+    axis.text.y = element_text(size = 4.5),
+    axis.text.x = element_text(size = 4.5, angle = 45, hjust = 0.85),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+Moreover, rookies (non-experience players) show a substantial variability in the number of games played, reflected in the length of the purple boxplot. This stands in contrast to the *Veteran* group, whose boxplot reflects lower dispersion, indicating a more regular and constant level of participation throughout the season.
+
+We may conclude that players either tend to improve their performance as they gain experience, or those who fail to improve their skills are released from the league before reaching the *Veteran* category. Meanwhile, the *Young* category includes both players who will eventually become top performers and those who are likely to struggle, and at this early stage it is difficult to distinguish between them.
+
+
+
+
+

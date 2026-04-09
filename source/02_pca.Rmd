@@ -1,0 +1,545 @@
+---
+title: "First Task: Principal Component Analysis (PCA)"
+author: "María Colado Montañés and Luis Calderón Yunda"
+output:
+  pdf_document:
+    number_sections: true
+    toc: true
+    toc_depth: 2
+fontsize: 11pt
+---
+# Principal Component Analysis
+
+In this part of the work, we focus on the quantitative variables of the dataset to explore their multivariate structure using PCA. The idea is to reduce the number of variables while keeping as much information as possible, and to see whether we can identify meaningful patterns in player performance during the 2022–23 NBA season.\
+
+
+For this analysis we only use the numerical variables (age, height, weight, draft number, games played, points, rebounds, assists and true shooting percentage). Categorical variables such as position or nationality are not included here.\
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+
+# Load required libraries
+library(tidyverse)
+library(FactoMineR)   
+library(factoextra)   
+library(ggplot2)
+library(viridis)
+library(corrplot)
+library(knitr)
+library(kableExtra)
+library(ggforce)
+library(ggrepel)
+``` 
+
+
+```{r echo=FALSE}
+data <- read.csv("nba_23_final.csv")
+
+quant <- c("age", "player_height", "player_weight","draft_number","gp", "pts", "reb", "ast", "ts_pct")
+
+X <- data[, quant]
+
+```
+
+```{r echo=FALSE}
+data_long <- data |>
+select(all_of(quant)) |>
+pivot_longer(cols = everything(),
+names_to = "variable",
+values_to = "value")
+```
+
+Recall the problem seen in the summary statistics and the boxplots for the quantitative variables, they have very different scales and dispersions. Because PCA is based on variances, variables with larger variance would dominate the first principal components if we worked with the covariance matrix. To avoid this issue and give all variables a comparable weight, in the following we perform PCA on the correlation matrix $R$ instead of on the covariance matrix $S$.
+
+
+
+
+## Extraction of the principal components
+
+We can now perform Principal Component Analysis in our data. \
+```{r }
+R <- cor(X)
+
+# Eigendecomposition of R
+R_eig  <- eigen(R)
+lambda <- R_eig$values    # eigenvalues
+T_mat  <- R_eig$vectors   # eigenvectors (loadings)
+
+# Percentage of variance explained
+
+var_explained <- lambda / sum(lambda) * 100
+```
+
+We obtain: \
+
+
+```{r pca_compute, echo=FALSE}
+cbind(
+PC      = paste0("PC", 1:length(lambda)),
+lambda  = round(lambda, 3),
+perc    = round(var_explained, 2)
+) |>
+kable(
+col.names = c("Component", "Eigenvalue", "% of variance"),
+caption   = "Eigenvalues and percentage of variance explained (manual computation)"
+) |>
+kable_styling(full_width = FALSE)
+
+```
+Notice that we can get the same result using the built-in function `prcomp`.\
+```{r echo=FALSE}
+pca_result <- prcomp(X, scale = TRUE)
+eig_val <- get_eigenvalue(pca_result)
+kable(
+eig_val,
+caption = "Eigenvalues and explained variance from prcomp"
+) |>
+kable_styling(full_width = FALSE)
+```
+
+
+At this point, we can analyse the eigenvectors in order to give a meaning to the new dimensions \(Y_1, Y_2, \ldots\).\
+
+```{r echo=FALSE, out.width="60%", fig.align="center"}
+y1 <- T_mat[, 1]
+y2 <- T_mat[, 2]
+
+df_y <- data.frame(
+  componente = paste0("X", 1:nrow(T_mat)),
+  y1 = as.numeric(y1),
+  y2 = as.numeric(y2)
+)
+
+
+ggplot(
+  transform(
+    stack(df_y[c("y1", "y2")]),               # wide to long
+    componente = rep(df_y$componente, 2)      # repeat component for y1 and y2
+  )
+) +
+  geom_col(
+    aes(x = componente, y = values, fill = ind),
+    position = "dodge",
+    color = "white",
+    width = 0.4
+  ) +
+  scale_fill_manual(values = c("y1" = "#6495ED", "y2" = "pink2")) +
+  scale_fill_manual(
+    name   = "PCA vector",
+    values = c("y1" = "#6495ED", "y2" = "pink2"),
+    labels = c("y1" = "PC1", "y2" = "PC2")
+  ) +
+  labs(
+    title = "PCA Weights",   
+    x = NULL,                
+    y = NULL                 
+  ) +
+  theme(
+    plot.title = element_text(size = 15, hjust = 0.5)
+  )
+```
+In this graphic, we can observe that PC1 weights of gp (number of games played) and pts (average points of the player) are positive and relatively large and draft number weight stands out as the only negative weight. This means that players with a high score on PC1 tend to play more games and score more points, also corresponding to better draft positions (low draft number). A possible interpretation of this is PC1 as a on.court contribution. A high PC1 implies a high-impact player\
+
+
+On the other hand, PC2 has strong positive weights on player_height and player_weight, while it has a negative large weights on ast (assited) and a smaller contribution of pts. So, players with high PC2 tend to be taller and heavier, but usually score and assist less and are less involved in playmaking. Players with low PC2 are the opposite: smaller, lighter players who score and assist more. Taking this into account, we can interpret PC2 as a role component that separates interior players (bigs) on the positive side from perimeter players or guards on the negative side.\
+
+
+We now project the players onto the first two principal components to see whether the reduced space reveals meaningful groups, especially in terms of scoring level and player role.\
+
+
+```{r biplot, echo=FALSE, out.width="60%", fig.align="center"}
+# Individual biplot
+fviz_pca_ind(pca_result,
+             geom.ind = "point",      # Show only points (no text to avoid clutter)
+             col.ind = data$sc_level, # Color by scoring level
+             palette = "jco",
+             addEllipses = TRUE,      # Add concentration ellipses
+             legend.title = "Scoring Level")
+
+
+```
+
+The projection of the players onto the first two principal components shows a clear structure. Along the first component (Dim1), players are mostly ordered according to their scoring level: “High” scorers appear on the right-hand side of the plot, while “Low” scorers are located on the left. This is consistent with the interpretation of PC1 as a general performance component, since players who score more points also tend to play more minutes and contribute more in rebounds and assists. PC2 mainly distinguishes taller, interior-oriented players from smaller perimeter players.\
+
+It is worth to mention that the first two principal components explain 56.7% of the total variance, which is enough to reveal clear trends but not to fully separate the groups. This, together with the inherent noise in player performance, explains the overlap between scoring levels in the PCA plot.
+
+
+## Methods for Discarding Components
+In this subsection we address the classical question of how many principal components should be retained. We apply the five criteria discussed in class: cumulative percentage of explained variance, Kaiser’s rule, Jolliffe’s modification, Cattell’s scree plot and the dimensionality Test . 
+
+
+```{r discarding_methods, echo=FALSE, out.width="60%", fig.align="center"}
+n <- nrow(X)
+p <- ncol(X)
+
+cum_var <- cumsum(lambda) / sum(lambda) * 100
+k_percentage <- which(cum_var >= 70)[1] # Example threshold: 80%
+
+
+k_kaiser <- sum(lambda > 1)
+
+
+
+k_jollife <- sum(lambda > 0.7)
+
+
+
+p <- ncol(R)
+eig.val <- get_eigenvalue(pca_result) #
+
+kaiser_threshold <- (1/p) * 100       # Kaiser: lambda > 1
+jolliffe_threshold <- (0.7/p) * 100   # Jolliffe: lambda > 0.7
+
+
+scree_data <- data.frame(
+  Component = 1:p,
+  Variance = eig.val[, 2] )
+
+
+library(ggplot2)
+
+ggplot(scree_data, aes(x = Component, y = Variance)) +
+  # Main line and points (The real Scree Plot)
+  geom_line(color = "#386AC7", size = 1.2) + 
+  geom_point(size = 3, color = "#386AC7", fill = "white", shape = 21, stroke = 1.5) +
+  
+  # Kaiser's Criterion Line (Lambda = 1)
+  geom_hline(aes(yintercept = kaiser_threshold), 
+             color = "#E74C3C", linetype = "dashed", size = 0.8) +
+  annotate("text", x = p, y = kaiser_threshold + 1.5, 
+           label = "Kaiser's Criterion (> 1)", 
+           color = "#E74C3C", size = 3.5, hjust = 1, fontface = "bold") +
+  
+  # Jolliffe's Criterion Line (Lambda = 0.7)
+  geom_hline(aes(yintercept = jolliffe_threshold), 
+             color = "#F39C12", linetype = "dashed", size = 0.8) +
+  annotate("text", x = p, y = jolliffe_threshold - 1.5, 
+           label = "Jolliffe's Criterion (> 0.7)", 
+           color = "#F39C12", size = 3.5, hjust = 1, fontface = "bold") +
+  
+  # General aesthetics
+  labs(title = "Cattell's Scree Graph",
+       x = "Principal Component",
+       y = "Explained variability") +
+  scale_x_continuous(breaks = 1:p) + 
+  
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank() 
+  )
+```
+The eigenvalues of the correlation matrix show that the first component explains about 32.7% of the total variance, the second around 24%, and the third and fourth roughly 11% each. Using the cumulative percentage of explained variance, we need the first four components to exceed the 70% threshold, so this criterion suggests retaining **k = 4** components.\
+
+Kaiser’s rule (keep components with eigenvalues larger than 1) recommends retaining the first 3 components ($k=3$). Jolliffe’s more permissive criterion (eigenvalues larger than 0.7) leads again to four components ($k=4$). The scree plot  displays a clear drop between PC1 and PC2 and a noticeable change of slope after PC3, indicating that most of the information is concentrated in the first few components and that keeping between three and four components is reasonable.\
+
+The last criterion is the dimensionality test:
+
+```{r echo=FALSE}
+# Translation of the MATLAB code from the notes to R
+results_test <- data.frame(k = integer(), 
+                           Statistic = double(), 
+                           df = integer(), 
+                           p_value = double(),
+                           Decision = character())
+
+# We test sequentially. If we reject H0, we keep more components.
+# We stop when we cannot reject H0 (p-value > alpha)
+alpha <- 0.05
+
+for (k in (p-2):0) {
+  # subset of small eigenvalues (the last p-k ones)
+  small_lambdas <- lambda[(k+1):p]
+  # Number of eigenvalues being tested for equality
+  q <- p - k 
+  
+  term1 <- n - (2*p + 11)/6
+  term2 <- q * log(mean(small_lambdas)) - sum(log(small_lambdas))
+  u <- term1 * term2
+  df <- (q - 1) * (q + 2) / 2
+  
+  p_val <- 1 - pchisq(u, df)
+  
+  decision <- if(p_val < alpha) "Reject H0 (Keep more)" else "Fail to Reject H0"
+  
+  results_test <- rbind(results_test, 
+                        data.frame(k = k, 
+                                   Statistic = round(u, 3), 
+                                   df = df, 
+                                   p_value = round(p_val, 5),
+                                   Decision = decision))
+}
+
+# Display results nicely
+kable(results_test, caption = "Dimensionality Test Results (H0: Last p-k eigenvalues are equal)")
+```
+
+The test for the equality of the last \(p-k\) eigenvalues fails to reject \(H_0\) for \(k = 6\) and \(k = 7\), which would formally suggest keeping at least six components. However, it is known that this test tends to be very sensitive with large samples such as ours (more than 400 players) and tends to overestimate the dimensionality with real data.\
+
+Taking all criteria together, and also considering interpretability, we decide to retain four principal components. Once the number of retained components has been determined, the PCA solution can be used to approximate the original data and to perform further analyses. The first four components already preserve more than 70% of the total variance, meaning that most of the relevant information is contained in the reduced representation. \
+
+
+
+
+## Stability Analysis
+
+In this final step, we assess the stability of our PCA solution. It is important to verify that the principal components are not driven by a single influential observation. To do so, we perform a jackknife leave-one-out procedure: we recompute the PCA \(n\) times, each time removing one player from the dataset, and we measure how much the configuration of individuals changes.\
+
+
+
+
+```{r echo=FALSE, out.width="60%", fig.align="center"}
+## ============================================
+## PCA stability via jackknife (on correlation)
+## Input: X (matrix n x p, numeric variables only)
+## Main outputs: Rad, rowsummary and two plots
+## ============================================
+
+X <- as.matrix(X)
+n <- nrow(X)
+p <- ncol(X)
+
+## --- Centering and scaling: PCA on correlation ---
+Xs <- scale(X, center = TRUE, scale = TRUE)
+
+## --- eigsort: equivalent to [T,D] = eigsort(S) in Matlab ---
+eigsort <- function(S) {
+  e <- eigen(S)
+  idx <- order(e$values, decreasing = TRUE)
+  T_mat  <- e$vectors[, idx, drop = FALSE]   # eigenvectors by columns
+  D  <- diag(e$values[idx])              # diagonal matrix of eigenvalues
+  list(T_mat = T_mat, D = D, lambda = e$values[idx])
+}
+
+## --- Global PCA on the correlation matrix ---
+R <- cor(Xs)           
+es <- eigsort(R)
+T_mat  <- es$T_mat
+D  <- es$D
+lambda <- es$lambda
+
+## Control the sign of the components (same as Matlab)
+for (j in 1:p) {
+  if (T_mat[1, j] < 0) {
+    T_mat[, j] <- -T_mat[, j]
+  }
+}
+
+## Original configuration Y (scores of all units)
+Y <- Xs %*% T_mat   
+
+## --- Jackknife leave-one-out ---
+v <- matrix(NA_real_, nrow = n, ncol = n)  # v(k,i): distance^2 unit k, configuration i
+
+for (i in 1:n) {
+  ## Remove unit i
+  Xi <- Xs[-i, , drop = FALSE]   # (n-1) x p
+  
+  ## Correlation matrix without unit i
+  R_i <- cor(Xi)
+  
+  ## PCA on R_i
+  es_i <- eigsort(R_i)
+  Ti   <- es_i$T_mat
+  
+  ## Control the sign of the components
+  for (j in 1:p) {
+    if (Ti[1, j] < 0) {
+      Ti[, j] <- -Ti[, j]
+    }
+  }
+  
+  Yi <- Xi %*% Ti              
+  y_i <- Xs[i, , drop = FALSE] %*% Ti   
+  
+ if (i == 1) {
+    Yplus_i <- rbind(y_i, Yi)
+  } else if (i == n) {
+    Yplus_i <- rbind(Yi, y_i)
+  } else {
+    Yplus_i <- rbind(
+      Yi[1:(i - 1), , drop = FALSE],
+      y_i,
+      Yi[i:(n - 1), , drop = FALSE]
+    )
+  }
+  for (k in 1:n) {
+    diff_ki <- Yplus_i[k, ] - Y[k, ]
+    v[k, i] <- sum(diff_ki^2)
+  }
+}
+
+v <- sqrt(v)
+
+Rad <- t(apply(v, 1, function(row) {
+  c(
+    min  = min(row, na.rm = TRUE),
+    max  = max(row, na.rm = TRUE),
+    q50  = as.numeric(quantile(row, 0.50, na.rm = TRUE)),
+    q75  = as.numeric(quantile(row, 0.75, na.rm = TRUE)),
+    q90  = as.numeric(quantile(row, 0.90, na.rm = TRUE)),
+    q95  = as.numeric(quantile(row, 0.95, na.rm = TRUE))
+  )
+}))
+
+Rad <- as.data.frame(Rad)
+
+## --- rowsummary: global statistics of Rad (mean, sd, median, mad) ---
+rowsummary <- rbind(
+  mean   = colMeans(Rad, na.rm = TRUE),
+  sd     = apply(Rad, 2, sd,     na.rm = TRUE),
+  median = apply(Rad, 2, median, na.rm = TRUE),
+  mad    = apply(Rad, 2, mad,    constant = 1, na.rm = TRUE)
+)
+
+rowsummary_df <- rowsummary |>
+  as.data.frame() |>
+  rownames_to_column("Statistic")
+
+rowsummary_df |>
+  kable(
+    caption   = "Global summary of stability radius",
+    digits    = 3
+  ) |>
+  kable_styling(
+    full_width    = FALSE,
+    position      = "center",
+    latex_options = c("hold_position", "scale_down")
+  )
+
+df_v <- as.data.frame(v)
+colnames(df_v) <- paste0("conf_", 1:n)
+
+df_v_long <- df_v |>
+  mutate(id = 1:n) |>
+  pivot_longer(
+    cols = starts_with("conf_"),
+    names_to = "config",
+    values_to = "dist"
+  )
+
+# 1) Summary per configuration (one row per boxplot)
+df_conf_sum <- df_v_long |>
+  group_by(config) |>
+  summarise(
+    median_dist = median(dist, na.rm = TRUE),
+    mean_dist   = mean(dist,   na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 2) Choose top outliers (e.g., top 7 by median)
+top_configs <- df_conf_sum |>
+  slice_max(median_dist, n = 7)
+
+# 3) Boxplot + labels only for top configs
+ggplot(df_v_long, aes(x = config, y = dist)) +
+  geom_boxplot(outlier.size = 0.5) +
+  # Points for text placement (at the median)
+  geom_point(
+    data = top_configs,
+    aes(x = config, y = 5),
+    color = "#6495ED", size = 1.5
+  ) +
+  geom_text(
+    data = top_configs,
+    aes(x = config, y = 5, label = config),
+    vjust = -0.5,
+    size = 3,
+    color = "#6495ED"
+  ) +
+  labs(
+    title = "Euclidean distance of each unit among configurations",
+    x = "Leave-one-out configuration",
+    y = "Distance"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x  = element_blank(),   # Hide x-axis labels to avoid clutter
+    axis.ticks.x = element_blank()
+  )
+```
+The results show that the overall PCA configuration is highly stable. For most players, the Euclidean distance between the original scores and the jackknife configurations remains very small, meaning that removing any single observation does not substantially modify the two-dimensional representation.\
+
+The boxplots of the leave-one-out distances confirm that the vast majority of configurations remain tightly clustered, while a small number of removals produce larger deviations. The stability maps reinforce this result: most players appear with very small circles, whereas a few units have large 90% regions and are therefore more influential in defining the PCA axes. These units correspond to extreme profiles in the dataset, typically players with very high performance values or unusual statistical combinations. \
+
+
+
+```{r echo=FALSE, out.width="60%", fig.align="center"}
+# Mean jackknife distance per player
+df_players <- tibble(
+  id       = 1:n,
+  name     = data$player_name,
+  mean_rad = rowMeans(v, na.rm = TRUE)
+)
+
+ggplot(
+  df_players |> arrange(desc(mean_rad)) |> slice(1:15),
+  aes(x = reorder(name, -mean_rad), y = mean_rad)
+) +
+  geom_col(fill = "#6495ED") +
+  labs(
+    title = "Least stable players according to mean distance",
+    x     = "Player",
+    y     = "Mean distance"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+
+```{r echo=FALSE, out.width="60%", fig.align="center"}
+df_pca <- tibble(
+  id     = 1:n,
+  name   = data$player_name,
+  PC1    = Y[, 1],
+  PC2    = Y[, 2],
+  radius = Rad$q90
+)
+
+threshold <- quantile(df_pca$radius, 0.97, na.rm = TRUE)
+
+ggplot(df_pca, aes(x = PC1, y = PC2)) +
+  # Points
+  geom_point(aes(size = radius, color = radius), alpha = 0.7) +
+  # Labels ONLY for the most unstable players
+  ggrepel::geom_text_repel(
+    data = df_pca |> filter(radius >= threshold),
+    aes(label = name),
+    size = 3
+  ) +
+  scale_size_continuous() +
+  scale_color_viridis_c() +
+  coord_equal() +
+  labs(
+    title = "PCA – stability regions (90%)",
+    x = "PC1",
+    y = "PC2"
+  )
+
+```
+
+
+This plot projects the players onto the first two principal components and visualizes the stability of their positions. The color and size of each point represent the 90% stability radius: larger and brighter points correspond to players whose coordinates vary more when other individuals are removed from the analysis. Most players show very small stability regions, meaning that their position in the PCA space is highly robust. Only a small group displays large radius, indicating that they are influential observations. \
+
+The two graphics are consistent. We can see that players with the highest mean distances in the jackknife analysis are the same ones that display the largest stability radius in the PCA map. \
+
+Interestingly, several of the least stable players identified (e.g., Steven Adams, Clint Capela, Rudy Gobert or Anthony Davis) are well-known impactful players in the NBA, often dominating in rebounding or overall performance. Their extreme statistical profiles place them at the edges of the PCA space, which explains why the components are more sensitive to their presence.\
+
+
+Overall, the stability analysis indicates that the PCA solution is robust: the main components and the relative positioning of the players do not depend on any single observation. This strengthens the validity of the interpretations presented in the previous sections.
+
+
+
+# Conclusions
+
+In this work we applied Principal Component Analysis to a dataset of NBA players from the 2022–23 season with the aim of reducing dimensionality and identifying the main patterns behind player performance. The first two components captured the most relevant structure in the data: PC1 reflected a general performance axis (scoring, rebounds, assists and playing time), while PC2 distinguished between bigger interior players and perimeter-oriented guards. This two-dimensional representation already revealed meaningful groupings, particularly in terms of scoring level and player role.\
+
+Using several criteria for component selection, we concluded that retaining four principal components provides a good balance between explained variability and interpretability, preserving more than 70% of the total information. The remaining components mostly contained noise or very specific variation.\
+
+Finally, the stability analysis showed that the PCA solution is robust: the positions of most players remained stable under jackknife resampling, and the interpretation of the components did not depend on any single observation. Only a small number of influential players—often high-impact or statistically extreme profiles—had a noticeable effect on the configuration, which is consistent with their dominant roles in the league.

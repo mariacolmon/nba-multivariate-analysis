@@ -1,0 +1,1533 @@
+---
+title: "Second Task - Multivariate Analysis"
+author: "María Colado Montañés and Luis Calderón Yunda"
+output:
+  pdf_document:
+    number_sections: true
+    toc: true
+    toc_depth: 2
+fontsize: 11pt
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(GGally)
+library(tidyverse)
+library(patchwork) 
+library(kableExtra) 
+library(knitr)
+library(cluster)
+library(dbrobust)
+library(dendextend)
+library(patchwork)
+```
+
+\newpage 
+
+# Introduction
+
+## Distance matrix
+
+In order to compute the matrix of squared distances $\mathbf{D2}$, we first need to define the $p$ features that we will work with. In particular, the **quantitative variables** that we are gonna use are:
+
+- `player_age`: age (in years)
+- `player_height`: height (in cm)
+- `player_weight`: weight (in kg)
+- `draft_number`: draft pick number (indicator for player quality at entry).
+- `gp`: games played
+- `pts`: average points scored
+- `reb`: average rebounds
+- `ast`: average assists
+- `ts_pct`: true shooting percentage
+
+Regarding the **categorical variables**, we will use `draft_year_cat`, which groups players according to their tenure in the league *(Young / Early Prime / Prime /Veteran)* and the binary variable `from_US`, which indicates if the player was born in the US or not.
+
+Notice that several qualitative features were defined in Task 1. Since some of them were derived from quantitative variables, we don't need to include them now. For example, this applies to `sc_level` (derived from `pts`), `country` (summarized by `from_US`) and `is_tall` (a dichotomized version of `player_height`). This is done in order to avoid counting the same information twice.
+
+## Gower's distance metric
+
+```{r, echo=FALSE}
+# Load data
+file_data = 'nba_23_final.csv'
+data_nba = read.csv(file_data)
+n = nrow(data_nba)
+column_names = colnames(data_nba)
+var_cualit = c('player_name',"team_abbreviation","country","from_US","draft_year_cat","is_tall","sc_level")
+
+## Quantitative variables we are gonna use
+var_quant = column_names[!(column_names %in% var_cualit)]
+p1 = length(var_quant)
+## Binary variables 
+var_bin = c('from_US')
+p2 = length(var_bin)
+## Categorical variables
+var_categ = c('draft_year_cat')
+p3 = length(var_categ)
+p = p1+p2+p3
+
+nba_mixed = data_nba[,c(var_quant,var_categ,var_bin)]
+## Define draft year as categorical variable
+nba_mixed$draft_year_cat <- factor(
+  nba_mixed$draft_year_cat,
+  levels = c("Young", "Early Prime", "Prime", "Veteran"),
+  ordered = TRUE
+)
+## Define from US as binary
+nba_mixed$from_US = factor(nba_mixed$from_US)
+```
+
+As we are working with a mixed-type multivariate dataset with $p=11$ variables, we will use Gower's distance, which has the following properties:
+
+* rescales each quantitative variable to ([0,1]) based on its range,
+* compares categorical variables via matches/mismatches,
+* and averages the variable-wise contributions into an overall dissimilarity in ([0,1]).
+
+Gower's distance matrix can be computed using the function `calculate_distances()` from the `dbrobust` package. This gives us a dist object that can be used as input for hierarchical clustering or MDS.
+
+```{r, warning=FALSE}
+D2_gower = calculate_distances(
+  nba_mixed,
+  method = "gower",
+  output_format = "dist",
+  continuous_cols = var_quant,
+  binary_cols = 'from_US',
+  categorical_cols = 'draft_year_cat',
+  squared = TRUE
+)
+```
+
+As a first descriptive check we inspect the distribution of pairwise dissimilarities. Values close to 0 correspond to very similar players (according to our variables), while values close to 1 indicate highly dissimilar profiles.
+
+```{r,warning=FALSE}
+summary(D2_gower)
+```
+
+For visual illustration of local structure, we can also display a heatmap of the dissimilarity matrix for a small random subset of players (e.g. 40–50 units), which reveals blocks of similar players.
+
+```{r echo = FALSE,warning=FALSE}
+D_gower = calculate_distances(
+  nba_mixed,
+  method = "gower",
+  output_format = "dist",
+  continuous_cols = var_quant,
+  binary_cols = 'from_US',
+  categorical_cols = 'draft_year_cat'
+)
+D_gower_mat = as.matrix(D_gower)
+```
+
+
+```{r echo=FALSE, warning=FALSE}
+visualize_distances(
+dist_mat = D_gower,
+method = "heatmap",
+max_n = 80, # at most 80 players in the plot 
+main_title = "Heatmap of classical Gower distances")
+```
+
+
+## Robust Gower's distance metric
+
+Classical Gower treats each continuous variable separately and is sensitive to outliers. To gain robustness we compute robust generalized Gower distances (GGower) with the function robust_distances(), which combines: 
+
+- Robust Mahalanobis distance for quantitative data, which takes into account correlation between quantitative variables and is less sensitive to outliers
+- Distance associated to Jaccard's similarity coefficient for binary data
+- Hamming distance for categorical data 
+
+```{r echo = FALSE, warning=FALSE}
+D2_ggower_mar <- robust_distances(
+data = nba_mixed,
+cont_vars = var_quant,
+bin_vars ="from_US",
+cat_vars = "draft_year_cat",
+alpha = 0.10, # trimming proportion for robust covariance
+method = "ggower"
+)
+D_ggower_mar <- as.dist(sqrt(D2_ggower_mar))
+```
+
+```{r, echo=FALSE,warning=FALSE}
+visualize_distances(
+dist_mat = D2_ggower_mar,
+method = "heatmap",
+max_n = 80,
+main_title = "Heatmap of robust GGower distances"
+)
+```
+
+To compare the standard and robust versions, we plot one dissimilarity against the other (each point corresponds to a pair of players). Points along the diagonal indicate that both distances agree, while large deviations highlight pairs where the robust transformation has a stronger effect.
+
+
+```{r, echo = FALSE, fig.show = "hold", out.width = "50%", fig.align = "center"}
+dist_df <- data.frame(
+distance = c(as.numeric(D_gower), as.numeric(D_ggower_mar)),
+type = rep(c("Classical Gower", "Robust GGower"),
+each = length(D_gower))
+)
+
+ggplot(dist_df, aes(x = distance, fill = type)) +
+geom_histogram(alpha = 0.5, position = "identity", bins = 30) +
+labs(title = "Comparison of distance distributions",
+x = "Distance", y = "Frequency") +
+theme(legend.position = "top")
+```
+
+These distance matrices `dist_gower` and `dist_gower_robust` will be the starting point for the hierarchical clustering analysis in the next subsection. Comparing both versions allows us to check the stability of the clustering structure with respect to moderate changes in the definition of dissimilarity.
+
+
+# Multidimensional Scaling (MDS) Analysis
+
+## Introduction
+
+In this section, we extend our previous analysis on the NBA dataset by applying a multivariate technique known as Multidimensional Scaling (MDS). Given a matrix $\mathbf{D} = (\delta_{ij})_{1\leq i,j \leq n}$ of pairwise distances between units, our goal is to represent the n = 402 individuals into an Euclidean space, by finding $\mathbf{y}_1,\mathbf{y}_2,\ldots,\mathbf{y}_n$ vectors of $\mathbb{R}^m$, such that:
+$$
+\delta_{ij}^2 = ||\mathbf{y}_1-\mathbf{y}_j||^2 \quad 1\leq i,j\leq n
+$$
+The orthogonal axes where this representation is possible are called Principal Components. When such representation exists it is said that $\mathbf{D}$ satisfies the Euclidean Property.
+
+By Schoenberg’s theorem, in order to guarantee the existence of an Euclidean representation in $\mathbb{R}^{m}$ for the distance matrix $\mathbf{D2}$ considered, it is necessary to verify that the associated Gram matrix $\mathbf{G} = -\tfrac{1}{2}\left(\mathbf{H}\,\mathbf{D2}\,\mathbf{H}\right)$ is positive semidefinite, where $\mathbf{H} = \mathbf{I}_{n} - \tfrac{1}{n}(\mathbf{1}\mathbf{1}')$ denotes the centering matrix. 
+
+This can be assessed by checking whether all eigenvalues of $\mathbf{G}$ are non-negative.
+
+```{r, echo = FALSE}
+# Matrix full of ones
+mat_ones = function(n){
+  ones = rep(1,n)
+  return(ones %*% t(ones))
+}
+ones = rep(1,n)
+I = diag(ones)
+H = I - (1/n) * (ones %*% t(ones))
+## Obtain matrix of distances D2 from similarity matrix
+D2_gower_mat = as.matrix(D2_gower)
+```
+
+
+```{r}
+## Compute Gram matrix
+Gram = -0.5 * (H %*% D2_gower_mat %*% H) 
+## Check positive semi-definiteness
+eigen_res = eigen(Gram)
+eigenvalues = eigen_res$values
+eigenvalues[(n-4):n]
+```
+
+We can observe that the last four eigenvalues are negative; therefore, we conclude that the distance matrix $\mathbf{D2}$ does not satisfy the Euclidean property. As a result, an adjustment is required, before proceeding to compute the principal coordinates. This can be done using the `make_euclidean()` function from the `dbrobust` package.
+```{r}
+## Using dbrobust
+weights = rep(1,n)
+D2_e = make_euclidean(D2_gower_mat, w = weights, tol = 1e-10)
+D2_gower_mat_e = D2_e$D_euc
+```
+
+The **principal coordinates** of the individuals are defined from the eigendecomposition of $\mathbf{G}$ as:
+$$
+\mathbf{Y} = \mathbf{U}\,\boldsymbol{\Lambda}^{1/2},
+$$
+where $\boldsymbol{\Lambda}$ is a diagonal matrix of eigenvalues of $\mathbf{G}$ sorted in decreasing order, and $\mathbf{U}$ is the orthogonal matrix of eigenvectors of $\mathbf{G}$.
+
+```{r}
+# Gram matrix SVD
+Gram = -0.5 * (H %*% D2_gower_mat_e %*% H) 
+svd_result = svd(Gram)
+U_svd = svd_result$u
+Sigma_svd = diag(svd_result$d)
+Y_cp = U_svd %*% sqrt(Sigma_svd)
+
+## Just take the eigenvalues more significant
+epsilon=1.e-6
+nvaps = which(abs(svd_result$d) > epsilon)
+T1 = U_svd[,nvaps]
+Y_adapt = T1 %*% sqrt(Sigma_svd[nvaps,nvaps])
+```
+
+
+```{r, echo=FALSE}
+
+var_acum <- function(Sigma_svd) {
+  vaps <- diag(Sigma_svd)
+  percent <- vaps / sum(vaps) * 100
+  acum <- cumsum(percent)
+  return(list(percent = percent, acum = acum))
+}
+
+plot_mds_custom_categ_var <- function(Y_adapt, color_vector, color_name = "Category",variability) {
+  
+  # 1. Create df with coordinates (PC1 and PC2)
+  coordenadas_df <- data.frame(
+    PC1 = Y_adapt[, 1],
+    PC2 = Y_adapt[, 2],
+    ColorVar = color_vector
+  )
+  
+  # 2. Build plot
+  grafico <- ggplot(coordenadas_df, aes(x = PC1, y = PC2, color = ColorVar)) +
+    # Add points
+    geom_point(size = 3, alpha = 0.8) + 
+    
+    # Add reference lines (0,0)
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray60") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray60") +
+    
+    # Labels and title
+    labs(
+      title = paste("MDS representation by:", color_name),
+      subtitle = paste("Gower's distance explained variability", as.character(round(variability,3)),"%"),
+      x = "PC 1",
+      y = "PC 2",
+      color = color_name
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "bottom",
+      plot.title = element_text(face = "bold", size = 12), #axis.title = element_text(size = 10, face = 'bold'),
+      axis.title.x =  element_text(face = "bold", size = 10),
+      axis.title.y =  element_text(face = "bold", size = 10),
+      legend.text = element_text(face = "bold",size = 10),
+    )
+  
+  return(grafico)
+}
+
+plot_mds_custom_categ_var_PC3 <- function(Y_adapt, color_vector, color_name = "Category") {
+  
+  # 1. Create df with coordinates (PC1 and PC2)
+  coordenadas_df <- data.frame(
+    PC1 = Y_adapt[, 1],
+    PC2 = Y_adapt[, 2],
+    ColorVar = color_vector
+  )
+  
+  # 2. Build plot
+  grafico <- ggplot(coordenadas_df, aes(x = PC1, y = PC2, color = ColorVar)) +
+    # Add points
+    geom_point(size = 3, alpha = 0.8) + 
+    
+    # Add reference lines (0,0)
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray60") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray60") +
+    
+    # Labels and title
+    labs(
+      title = paste("MDS representation by:", color_name),
+      subtitle = "Gower's distance",
+      x = "PC 1",
+      y = "PC 3",
+      color = color_name
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "bottom",
+      plot.title = element_text(face = "bold", size = 12), 
+      axis.title.x =  element_text(face = "bold", size = 10),
+      axis.title.y =  element_text(face = "bold", size = 10),
+      legend.text = element_text(face = "bold",size = 10),
+    )
+  
+  return(grafico)
+}
+
+Y_cp_var = var_acum(Sigma_svd)
+
+```
+
+
+## MDS representation
+
+```{r, echo = FALSE, fig.show = "hold", out.width = "47%", fig.align = "center",warning=FALSE}
+
+plot_mds_custom_categ_var(
+  Y_adapt,
+  nba_mixed$draft_year_cat,
+  "Draft year category",
+  Y_cp_var$acum[2]
+)
+
+# Create a data frame for ggplot
+data_var <- data.frame(
+  Index = 1:length(Y_cp_var$acum), 
+  Acum = Y_cp_var$acum
+)
+
+# Create the plot with ggplot2
+ggplot(data_var, aes(x = Index, y = Acum)) +
+  geom_point(color = "red", shape = 1) +  # Points in red
+  geom_line(color = "blue", size = 0.5) +  # Thinner blue line connecting the points
+  scale_x_continuous(limits = c(1, 405)) +  # X-axis limits from 1 to xmax
+  scale_y_continuous(limits = c(0, 100)) +  # Y-axis limits from 0 to 100
+  labs(
+    x = "Eigenvalues",  # Label for X-axis
+    y = NULL,  # Label for Y-axis
+    title = "Cumulative Variance Percentage",
+    subtitle = "Gower's distance"# Title for the plot
+  ) +
+  theme_minimal()+
+  theme(
+      plot.title = element_text(face = "bold", size = 12),
+      axis.title = element_text(size = 10, face = "bold"),
+      axis.text.y = element_text(face = "bold"),
+    )
+  
+```
+
+In the left panel of the figure, we have the MDS representation given by the first two principal components. We can appreciate that players are grouped in two different cloud of points but in order to gain more insight we decide to color the scatterplot in terms of the multiclass `draft_year_cat` variable. By this approach, we can see an evident pattern: 
+
+As the number of years playing in the league increases, players tend to be located on the right-hand side of the plot (green and yellow points). Conversely, recently drafted players (purple) or those with limited prior experience (blue) are mainly located on the left side part of the plot. This pattern along the horizontal axis provide a possible influence of the `draft_year_cat` variable on the first principal component (PC1), which will be later studied. 
+
+In the right panel of the figure, we can observe the evolution of the cumulated percentage of explained variation. Notice that if we take the first three eigenvalues of the Gram matrix, sorted from largest to smallest, we obtain:
+$$\lambda_1 = 6.30 > \lambda_2 = 5.27 > \lambda_3 = 4.14$$
+However, the differences among them are not as pronounced as those typically observed for the eigenvalues in PCA. This is because, in MDS, the total variability must be splitted along a large number of dimensions in this case $m = 401$. For this reason, the variability captured by the first two principal components is only about $3.72\%$. In particular, if we want to get more than $30\%$ of variability we would need at least 100 dimensions, which means that the cumulative variability increases at a very slow rate.
+
+## Influence of the variables on the principal axes
+
+Another important point to study, is how the original variables influence the principal coordinates. This can be done by computing Pearson's correlation only between quantitative features and the coordinates. In the case of qualitative features, we need to study the association using: Spearman's correlation coefficient for the ordinal `draft_year_cat` variable and Cramer's V for the nominal `is_fromUS` variable.
+
+```{r echo=FALSE}
+CramerV <- function(u, X) {
+  n <- length(u)
+  
+  # 1. Define percentiles (0, 25, 50, 75, 100)
+  p <- c(0, 0.25, 0.50, 0.75, 1)
+  q <- quantile(X, probs = p)
+  
+  # 2. Categorise X based on quartiles (equivalent to Xcat)
+  Xcat <- cut(X, breaks = q, include.lowest = TRUE, labels = FALSE)
+  
+  # 3. Build contingency table
+  tab <- table(u, Xcat)
+  
+  # 4. Chi-squared test (suppressWarnings handles low expected frequencies)
+  chi_test <- suppressWarnings(chisq.test(tab))
+  chi2 <- chi_test$statistic
+  
+  # 5. Dimensions for the formula
+  k <- length(unique(u))
+  r <- length(unique(Xcat))
+  
+  # 6. Cramer's V
+  V <- sqrt(chi2 / (n * min(k - 1, r - 1)))
+  
+  return(as.numeric(V))
+}
+prepare_corr_table <- function(X,corr_table) {
+  # 1. Convert correlation table to data frame
+  MM_df <- as.data.frame(corr_table)
+  
+  # 2. Rename columns dynamically (PC1, PC2, ...)
+  colnames(MM_df) <- paste0("PC", 1:ncol(MM_df))
+  
+  # 3. Add 'Variable' column with column names from X
+  MM_df$Variable <- colnames(X)
+  
+  return(MM_df)
+}
+Correlations2 = function(X,Y,p_cuant,p_nominal){
+  
+  # 1. Get dimensions and define variables
+  p <- ncol(X)
+  p_ordinal <- p - p_cuant - p_nominal
+  
+  # 2. Initialise correlation table (filled with zeros)
+  # p rows and 3 columns
+  corr_table <- matrix(0, nrow = p, ncol = 3)
+  
+  # 3. Pearson correlations
+  # Note: cor() in R returns variables in columns; t() transposes to match expected structure.
+  corr_table[1:p_cuant, ] <- t(cor(Y[, 1:3], X[, 1:p_cuant], method = "pearson"))
+  
+  # Associations with p_nominal binary (nominal) variables using CramerV
+  for (i in (p_cuant + 1):(p_cuant + p_nominal)) {
+    corr_table[i, ] <- c(
+      CramerV(X[, i], Y[, 1]),
+      CramerV(X[, i], Y[, 2]),
+      CramerV(X[, i], Y[, 3])
+    )
+  }
+  # 2. Correlaciones con las p_ordinal variables cualitativas (no binarias/ordinales)
+  # En MATLAB usas 'Spearman'. En R el método es "spearman" (en minúsculas generalmente)
+  # Al igual que antes, transponemos con t() para que coincida con la estructura
+  inicio_ordinal <- p_cuant + p_nominal + 1
+  corr_table[inicio_ordinal:p, ] <- t(cor(
+    Y[, 1:3], 
+    X[, inicio_ordinal:p], 
+    method = "spearman"
+  ))
+  
+  return(corr_table)
+}
+
+plot_PC_correlation <- function(X,corr_table) {
+  
+  # 1. Create correlations table
+  MM_df = prepare_corr_table(X,corr_table)
+  # 2. Transform to tidy format for ggplot2
+  MM_long <- MM_df %>%
+    pivot_longer(
+      cols = starts_with("PC"), 
+      names_to = "Component", 
+      values_to = "Valor"
+    )
+  
+  # 3. Custom colour palette
+  my_colors <- c("#0000CC", "#0066FF", "#66CCFF", "#FFFFFF", "#FF99FF", "#FF33CC", "#800080")
+  
+  # 4. Build heatmap
+  p <- ggplot(MM_long, aes(x = Component, y = Variable, fill = Valor)) +
+    geom_tile(color = "white") + 
+    scale_fill_gradientn(
+      colors = my_colors, 
+      limits = c(-1, 1), 
+      name = ""
+    ) +
+    labs(
+      title = "Principal Coordinates correlation heatmap",
+      x = NULL,
+      y = NULL
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 0, face = "bold"),
+      axis.text.y = element_text(size = 8),
+      plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+    )
+  
+  return(p)
+}
+
+### Order the features of the dataset as cuantitative, nominal(binary) and ordinal(categorical)
+X = nba_mixed
+X_us = X$from_US
+X_draft = X$draft_year_cat
+X$from_US = NULL
+X$draft_year_cat = NULL
+X$from_US = X_us
+X$draft_year_cat = X_draft
+### Transform factor into numeric to use Spearman
+X$draft_year_cat = as.numeric(X$draft_year_cat)
+## Correlation table
+corr_table = Correlations2(X,Y_adapt,9,1)
+PC_corr = prepare_corr_table(X,corr_table)
+
+```
+
+```{r, echo = FALSE, fig.align = "center"}
+plot_PC_correlation(X, corr_table)
+# Note: numerical correlation table was generated separately in MATLAB
+```
+
+Using the correlation table, we can say that the most influential variables in the fist axis are `age`, and `draft_year_cat` with positive correlation/association and `draft_number` with negative correlation. The second axis has a almost a perfect positive association with `from_US` and a negative correlation with `player_height`. Finally, the most influential variable in the third axis is `age` with negative correlation, meaning that as a player gets older its third component value decreases.
+
+## Variable's partial influence on the MDS configuration
+
+On the left-hand side of the plot, we have the partial influence of the quantitative variables in the MDS configuration computed from Gower’s distance. 
+
+```{r, echo=FALSE}
+# Note: partial influence plots were generated in MATLAB
+```
+
+The quantitative variables with the strongest contribution to the first axis are identified by curves that predominantly move from left to right. 
+
+Therefore, variables like  $X_1$ (`age`), $X_4$ (`draft_number`), $X_6$ (`pts`), and $X_7$ (`reb`) appear to have some influence on PC1. In contrast, $X_2$ (`player height`) and $X_3$ (`player weight`) seem to have influence on the second axis, because their curves go from up to down.
+
+The same approach can be used for the qualitative variables on the right-hand side plot. There is some kind of horizontal separation between the four points of the `draft_year_cat` variable, meaning that it might have influence on PC1. Meanwhile, the binary variable `fromUS`, only has two points that are clearly vertically separated, which suggests an influence on PC2.
+
+```{r echo=FALSE}
+plot_mds_coord_conditional <- function(coords_matrix, condition, title_suffix = "") {
+  
+  # 1. Create dataframe
+  df_plot <- data.frame(
+    PC1 = coords_matrix[, 1],
+    PC2 = coords_matrix[, 2],
+    Var_cond = condition
+  )
+  
+  # 2. Build plot
+  p <- ggplot(df_plot, aes(x = PC1, y = PC2)) +
+    # Puntos con color dependiente de la variable numérica
+    geom_point(aes(color = Var_cond), size = 2.5, alpha = 0.8) + 
+    
+    # Continuous colour scale
+    #scale_color_viridis_c(option = "viridis") + 
+    scale_color_viridis_c(option = "magma") +
+    
+    # Reference lines at origin
+    geom_hline(yintercept = 0, linetype = "dotted", color = "gray70") +
+    geom_vline(xintercept = 0, linetype = "dotted", color = "gray70") +
+    
+    # Labels and title
+    labs(
+      title = paste("MDS representation by:", title_suffix),
+      subtitle = "Gower's distance",
+      x = "PC1",
+      y = "PC2",
+      color = "Value" # Legend label
+    ) +
+    
+    # Clean theme
+    theme_minimal() +
+    theme(
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(face = "bold", size = 12),
+      legend.position = "right",
+      axis.title.x =  element_text(face = "bold", size = 10),
+      axis.title.y =  element_text(face = "bold", size = 10),
+    )
+  
+  return(p)
+}
+
+plot_mds_coord_conditional_PC3 <- function(coords_matrix, condition, title_suffix = "") {
+  
+  # 1. Create dataframe
+  df_plot <- data.frame(
+    PC1 = coords_matrix[, 1],
+    PC2 = coords_matrix[, 2],
+    Var_cond = condition
+  )
+  
+  # 2. Build plot
+  p <- ggplot(df_plot, aes(x = PC1, y = PC2)) +
+    # Puntos con color dependiente de la variable numérica
+    geom_point(aes(color = Var_cond), size = 2.5, alpha = 0.8) + 
+    
+    # Continuous colour scale
+    #scale_color_viridis_c(option = "viridis") + 
+    scale_color_viridis_c(option = "magma") +
+    
+    # Reference lines at origin
+    geom_hline(yintercept = 0, linetype = "dotted", color = "gray70") +
+    geom_vline(xintercept = 0, linetype = "dotted", color = "gray70") +
+    
+    # Labels and title
+    labs(
+      title = paste("MDS representation by:", title_suffix),
+      subtitle = "Gower's distance",
+      x = "PC1",
+      y = "PC3",
+      color = "Value" # Legend label
+    ) +
+    
+    # Clean theme
+    theme_minimal() +
+    theme(
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(face = "bold", size = 12),
+      legend.position = "right",
+      axis.title.x =  element_text(face = "bold", size = 10),
+      axis.title.y =  element_text(face = "bold", size = 10),
+    )
+  
+  return(p)
+}
+
+```
+
+## Profile identification (conditional scatterplots)
+
+
+```{r, echo = FALSE, fig.show = "hold", out.width = "48%", fig.align = "center"}
+plot_mds_coord_conditional(Y_adapt,nba_mixed$draft_number,"Draft number")
+plot_mds_coord_conditional(Y_adapt,nba_mixed$pts,"Average Points")
+#plot_mds_coord_conditional(Y_adapt,nba_mixed$ast,"Average Asistances")
+```
+
+One  possible profile that we can get from this representation is that the individuals who were picked by a team in the last positions during the draft, meaning that they could be consider as worst players (lighter colors on the plot from left) tend to be the same players that usually score the least number of points during the season (darker colors on the plot from the right). Meanwhile the players who were picked the first (darker colors on the left) are the same with the most number of points obtained during the season (lighter colors on the right). The same effect happens with the number of rebounds, assistances and games played but with a lower strength.
+
+We can therefore conclude that first principal coordinate captures players’ overall on-court involvement, scoring contribution, and experience in the league (as we saw earlier in the first mds representation by `draft_year_cat`).
+
+```{r, echo = FALSE, fig.show = "hold", out.width = "48%", fig.align = "center"}
+plot_mds_custom_categ_var(
+  Y_adapt,
+  nba_mixed$from_US,
+  "From US",
+  Y_cp_var$acum[2]
+)
+plot_mds_coord_conditional(Y_adapt,nba_mixed$player_height,'Height')
+#plot_mds_coord_conditional(Y_adapt,nba_mixed$player_weight,'Weight')
+
+```
+Conditioning the MDS representation on the only binary variable used, it reveals a clear separation along the second principal coordinate. Players born in the US are mainly located at positive values of PC2, whereas non-US players concentrate at negative values. This suggests that PC2 captures systematic differences in player profiles associated with their origin, while PC1 remains largely independent of this factor.
+
+From the right plot, we can see that taller players (lighter colors) tend to be located at negative values of PC2, while shorter players (darker colors) tend to appear at positive values. Similarly, heavier players (lighter points) are primarily located at negative values of PC2, whereas less heavy players (darker points) are concentrated at positive values.
+
+We can therefore conclude that the second principal coordinate captures players’ physical characteristics or attributes like origin.
+
+Notice that, by using this conditional scatterplot approach, we obtain results that are consistent with those previously discussed regarding the partial influence of the variables.
+
+```{r, echo = FALSE, fig.show = "hold", out.width = "48%", fig.align = "center"}
+Y_cp_13 = Y_adapt[,c(1,3)]
+plot_mds_custom_categ_var_PC3(
+  Y_cp_13,
+  nba_mixed$draft_year_cat,
+  "Draft year"
+)
+plot_mds_coord_conditional_PC3(Y_cp_13,data_nba$age,'Age')
+#plot_mds_coord_conditional(Y_cp_13,data_nba$gp,'games played')
+```
+
+Two distinct groups can be clearly identified according to players’ years of experience in the league. The first one is made up of players classified as young or in the prime stages of their careers, that is, those belonging to the first three levels of `draft_year_cat`, who tend to be located in the upper region of the plot, whereas veteran players (yellow points) are predominantly located in the lower part.
+
+A similar pattern is observed with respect to age. Younger players (below 30 years old) are predominantly located in the upper part of the plot, while players aged 30 or older tend to appear in the bottom. This provide us with the profile for the veteran players, who are usually the oldest members in the team.
+
+As a result, we can say that the third principal coordinate captures a temporal dimension of players’ careers, reflecting their stage in the league in terms of age and experience.
+
+## Stability analysis
+
+To conclude our analysis using Gower's distance, we decided to study the stability of the MDS configuration.
+
+```{r, echo=FALSE}
+# Note: stability plot was generated in MATLAB
+```
+
+We know that the more concentrated the circle is around a point in the plot, the more stable that individual is. And if the circle tends to have a larger radius, that means the point is unstable. In this case, most of our individuals are stable points.
+
+## Robust RelMS analysis
+
+In this section, we will obtain the MDS configuration from robust Related Metric Scaling (RelMS) by combining: Robust Mahalanobis distance, Jaccard's similarity and Hamming distance. 
+
+Notice that for the Robust Mahalanobis distance is necessary a robust estimation of the population covariance matrix. We can obtain one by using the function `robust_covariance_gv()` from the `dbrobust` package. It is also necessary to defined a weight for all the individuals, as we know, this parameter works better when the sample is not iid, which is not our case, so then, we give uniform weights.
+
+After that, we can continue and get the robust matrix of squared pairwise distances by using the function `Robust_Rel_MS()` with the parameter `relms`.
+
+```{r}
+## ROBUST COVARIANCE ESTIMATION
+weights <- rep(1, nrow(X)) 
+alpha <- 0.10
+Robust_cov_mat = robust_covariance_gv(X[,1:p1], weights, alpha)
+S_robust_cov = Robust_cov_mat$S
+
+## ROBUST DISTANCE MATRIX
+Robust_Rel_MS = robust_distances(
+  data = X,
+  cont_vars = var_quant,
+  bin_vars = var_bin,
+  cat_vars = var_categ,
+  w = weights,
+  method = c("relms"),
+  robust_cov = S_robust_cov,
+  alpha = 0.1,
+  return_dist = FALSE
+)
+```
+
+As in the former analysis, it is necessary to check whether if the distance matrix satisfies the  Euclidean property, cause if not we must apply a transformation. Using `make_euclidean()` function we can see that the robust matrix of distances is indeed euclidean.
+
+```{r echo=FALSE}
+## Check if it is a euclidean distance
+Robust_Rel_MS_trans = make_euclidean(Robust_Rel_MS, weights, tol = 1e-10)
+D2_robuts = Robust_Rel_MS_trans$D_euc
+```
+
+
+```{r echo=FALSE}
+## We get MDS configuration for this robust distance matrix
+# Gram matrix SVD
+ones = rep(1,n)
+Gram_robust = -0.5 * (H %*% D2_robuts %*% H) 
+
+svd_result_robust = svd(Gram_robust)
+U_svd_robust = svd_result_robust$u
+Sigma_svd_robust = diag(svd_result_robust$d)
+Y_cp_robust = U_svd_robust %*% sqrt(Sigma_svd_robust)
+
+## Just take the eigenvalues more significant
+epsilon=1.e-6
+nvaps_rob = which(abs(svd_result_robust$d) > epsilon)
+T1_rob = U_svd_robust[,nvaps_rob]
+Y_adapt_rob = T1_rob %*% sqrt(Sigma_svd_robust[nvaps_rob,nvaps_rob])
+
+```
+
+
+```{r,echo=FALSE}
+plot_robust_custom_categ_var <- function(Y_adapt, color_vector, color_name = "Category", variability) {
+  
+  # 1. Create df with coordinates (PC1 and PC2)
+  coordenadas_df <- data.frame(
+    PC1 = Y_adapt[, 1],
+    PC2 = Y_adapt[, 2],
+    ColorVar = color_vector
+  )
+  
+  # 2. Build plot
+  grafico <- ggplot(coordenadas_df, aes(x = PC1, y = PC2, color = ColorVar)) +
+    # Add points
+    geom_point(size = 3, alpha = 0.8) + 
+    
+    # Add reference lines (0,0)
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray60") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray60") +
+    
+    # Labels and title
+    labs(
+      title = paste("MDS representation by:", color_name),
+      subtitle = paste("Robust RelMS explained variability", as.character(round(variability,3)),"%"),
+      x = "PC 1",
+      y = "PC 2",
+      color = color_name
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "bottom",
+      plot.title = element_text(face = "bold", size = 12), #axis.title = element_text(size = 10, face = 'bold'),
+      axis.title.x =  element_text(face = "bold", size = 10),
+      axis.title.y =  element_text(face = "bold", size = 10),
+      legend.text = element_text(face = "bold",size = 10),
+    )
+  
+  return(grafico)
+}
+```
+
+
+### MDS representation
+
+We plot the first two axes of the MDS configuration obtained from robust RelMS: the plot on the right shows a strong separation along PC1 that clearly splits players by `from_US` (two distinct vertical bands with minimal overlap).
+
+```{r, echo = FALSE, fig.show = "hold", out.width = "48%", fig.align = "center"}
+var_robut = var_acum(Sigma_svd_robust) # 46.85 two first components
+var_robut_acum = var_robut$acum
+
+plot_robust_custom_categ_var(Y_adapt_rob,nba_mixed$draft_year_cat,'Draft year',round(var_robut_acum[2],3))
+plot_robust_custom_categ_var(Y_adapt_rob,nba_mixed$from_US,'From US',round(var_robut_acum[2],3))
+#plot_mds_coord_conditional(Y_robust_remds$coords,nba_mixed$player_weight,'REmds')
+```
+
+In contrast, `draft_year_cat` is mainly reflected on PC2, with Prime players clustered at lower values and Veteran at higher values of the axis, notice that this two categories now seem to be statistical different, compared to the results obtained when using Gower's distance. The categories for Young/Early Prime lie in between and and remain closer to each other.
+
+We also tried several conditional scatterplots using weight or height, but we were not able to identify any clear groups because the points overlap substantially.
+
+```{r echo = FALSE}
+corr_table_rms = Correlations2(X,Y_adapt_rob,9,1)
+PC_corr_rms = prepare_corr_table(X,corr_table_rms)
+```
+
+### Evolution of correlation
+
+```{r, echo = FALSE, fig.show = "hold", out.width = "48%", fig.align = "center"}
+
+### EVOLUTION OF PC1
+
+Pc_cor_mg_PC1 = merge(
+  PC_corr_rms[, c(1, 4)],
+  PC_corr[, c(1, 4)],
+  by = "Variable"
+)
+
+colnames(Pc_cor_mg_PC1) <- c("Variable", "PC1_robust_RelMS", "PC1_Gowers")
+#colnames(Pc_cor_mg) <- c("Variable", "PC2_robust_RelMS", "PC2_Gowers")
+
+# 1. Prepare data for long format
+df_long <- Pc_cor_mg_PC1 %>%
+  pivot_longer(
+    cols = c(PC1_robust_RelMS, PC1_Gowers), 
+    names_to = "Method", 
+    values_to = "Correlation"
+  )
+
+# 2. Build plot
+ggplot(df_long, aes(x = Variable, y = Correlation, color = Method, group = Method)) +
+  # Lines and points for visibility
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  
+  # Reference line at 0
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  
+  # Custom colours
+  scale_color_manual(values = c("PC1_robust_RelMS" = "#E41A1C", "PC1_Gowers" = "#377EB8")) +
+  
+  # Labels and formatting
+  labs(
+    title = "Cross-correlation/associations with PC1",
+    x = NULL,
+    y = NULL,
+    color = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    title = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold",size = 8),
+    legend.position = "bottom",
+    legend.text = element_text(face = "bold",size = 10),
+    panel.grid.minor = element_blank()
+  )
+
+
+### Evolution Correlation in PC2
+Pc_cor_mg_PC2 = merge(
+  PC_corr_rms[, c(2, 4)],
+  PC_corr[, c(2, 4)],
+  by = "Variable"
+)
+
+#colnames(Pc_cor_mg) <- c("Variable", "PC1_robust_RelMS", "PC1_Gowers")
+colnames(Pc_cor_mg_PC2) <- c("Variable", "PC2_robust_RelMS", "PC2_Gowers")
+
+# 1. Prepare data for long format
+df_long <- Pc_cor_mg_PC2 %>%
+  pivot_longer(
+    cols = c(PC2_robust_RelMS, PC2_Gowers), 
+    names_to = "Method", 
+    values_to = "Correlation"
+  )
+
+# 2. Build plot
+ggplot(df_long, aes(x = Variable, y = Correlation, color = Method, group = Method)) +
+  # Lines and points for visibility
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  
+  # Reference line at 0
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  
+  # Custom colours
+  scale_color_manual(values = c("PC2_robust_RelMS" = "#E41A1C", "PC2_Gowers" = "#377EB8")) +
+  
+  # Labels and formatting
+  labs(
+    title = "Cross-correlation/associations with PC2",
+    x = NULL,
+    y = NULL,
+    color = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    title = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold",size = 8),
+    legend.position = "bottom",
+    legend.text = element_text(face = "bold",size = 10),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+If we focus on the left-hand plot, we can see that the correlation between PC1 and the remaining features is, most of the time, higher when using Gower’s distance than when using the robust RelMS method (the blue line is usually above the red one). However, the first principal component is overwhelmingly influenced by `from_US` when using the robust RelMS method. By contrast, under Gower’s distance, PC1 shows moderate positive correlations with `draft_year_cat` and several `performance metrics` (between 0.5 and 0.7).
+
+The opposite pattern appears when analyzing the right-hand graph. In this case, the second principal component is the one most influenced by the variable `from_US`, and it also shows a moderate negative correlation (around -0.4 to -0.5) with `physical characteristics` when using Gower’s distance. The robust RelMS version shrinks these effects substantially: the association with `from_US` becomes close to 0, and the associations with height and weight also move very close to this same value. With the robust method, PC2 is only slightly related to `draft_year_category` and `age`.
+
+Notice that the main advantage of using the robust Gower's distance is that with just the first two principal components we are able to capture 46% of the variability, actually a great improvement from using Gower's distance.
+
+# Cluster Analysis
+
+```{r distances-setup, message=FALSE, warning=FALSE, echo = FALSE}
+# Load data (already used in Task 1)
+data_nba <- read.csv("nba_23_final.csv")
+
+# Identify numeric and categorical variables to be used in the distance
+vars_num <- c("age",
+              "player_height",
+              "player_weight",
+              "draft_number",
+              "pts",
+              "gp",
+              "reb",
+              "ast",
+              "ts_pct")
+
+vars_cat <- c("from_US",
+              "draft_year_cat",
+              "team_abbreviation")
+
+# Keep only the variables needed for the mixed-type distance
+nba_mixed <- data_nba %>%
+  dplyr::select(all_of(c(vars_num, vars_cat)))
+```
+
+
+```{r echo = FALSE, warning=FALSE}
+D_gower <- calculate_distances(
+x = nba_mixed,
+method = "gower",
+output_format = "dist",
+continuous_cols = vars_num,
+binary_cols ="from_US",
+categorical_cols = "draft_year_cat"
+)
+```
+
+```{r echo = FALSE, warning= FALSE}
+D2_ggower <- robust_distances(
+data = nba_mixed,
+cont_vars = vars_num,
+bin_vars ="from_US",
+cat_vars = "draft_year_cat",
+alpha = 0.10, # trimming proportion for robust covariance
+method = "ggower"
+)
+D_ggower <- as.dist(sqrt(D2_ggower))
+```
+
+Cluster analysis is an unsupervised multivariate technique aimed at discovering homogeneous groups of observations when no class labels are available a priori. In our context, the goal is to identify groups of NBA players with similar profiles in terms of physical attributes, draft information and performance statistics.\
+
+Following the distance-based framework introduced previously in this report, we treat the data as a set of points equipped with a mixed-type dissimilarity. In particular, we work with the classical Gower distance and its robust Gower variant, which combine continuous, binary and categorical variables into a single measure of pairwise dissimilarity between players.\
+
+These distance matrices are then used as input for two clustering approaches. First, we apply agglomerative hierarchical clustering to the Gower and robust GGower distances, comparing the resulting dendrograms and assessing their distortion via cophenetic correlation. Second, we complement this analysis with k-means clustering on the quantitative variables, using the categorical variables only for interpretation of the final groups.
+
+
+## Hierarchical clustering
+
+In this subsection agglomerative hierarchical clustering to the mixed-type dissimilarity matrices obtained in the previous parts (classical Gower and robust Gower). The algorithm starts with $n$ singleton clusters and iteratively merges the two closest clusters until all observations belong to one group. The output is a dendrogram (nested sequence of partitions).\
+
+Because NBA performance variables contain extreme profiles (elite players / outliers), a robust mixed-type distance can better prevent a few atypical observations from dominating the geometry of the data.\
+
+A key modelling choice is the linkage criterion, which defines the distance between clusters. In this work we are going to compare three standard choices:
+
+- Single linkage: minimum distance between pairs of observations.
+- Complete linkage: maximum distance.
+- Average linkage: average distance over all pairs.
+
+For each distance matrix and each linkage, we compute the corresponding dendrogram using the `hclust()` function.
+
+```{r echo=FALSE}
+
+linkages <- c("single", "complete", "average")
+
+hc_gower<- lapply(linkages, function(m)
+hclust(D_gower, method = m)
+)
+names(hc_gower) <- linkages
+
+hc_robustgower <- lapply(linkages, function(m)
+hclust(D_ggower, method = m)
+)
+names(hc_robustgower) <- linkages
+
+```
+
+A hierarchical tree inevitably compresses the information contained in the original distance matrix. If the tree is a good summary, pairs of players that were very similar (small distance) should merge low in the dendrogram, whereas very dissimilar pairs should only meet at high levels. \
+
+For a given dendrogram, we can obtain a second distance matrix, containing the distances implied by the dendrogram, the height at which their branches first join in the tree. We then compare the original distances by computing the cophenetic correlation, that is, the Pearson correlation between both matrices. The closer is this correlation to 1, the less the dendrogram distorts the original distances. We are using this criterion to compare different linkage functions and to select the one that best preserves the mixed-type distances between players.\
+
+
+```{r, echo=FALSE}
+coph_corr <- function(hc, D) {
+  Dc <- cophenetic(hc)
+  cor(as.numeric(D), as.numeric(Dc))
+}
+
+coph_gower  <- sapply(hc_gower,  coph_corr, D = D_gower)
+coph_ggower <- sapply(hc_robustgower, coph_corr, D = D_ggower)
+```
+
+```{r echo=FALSE}
+# Build a nice summary table
+coph_table <- data.frame(
+  linkage        = names(coph_gower),
+  Gower          = as.numeric(coph_gower),
+  Robust_Gower  = as.numeric(coph_ggower)
+) %>%
+  arrange(desc(Robust_Gower))
+
+kable(
+  coph_table,
+  digits  = 3,
+  caption = "Cophenetic correlations"
+)
+```
+
+
+In our data, average linkage yields the highest cophenetic correlation (for both distance definitions), so we adopt it as the main hierarchical method. Moreover, robust Gower consistently provides a slightly better fit (higher cophenetic correlation), which is coherent with the presence of extreme statistical profiles in the NBA dataset. Together, using the average linkage with Robust Gower have degree of distortion of less than $10\%$.
+
+```{r echo = FALSE}
+hc_main <- hc_robustgower[["average"]]
+```
+
+To visualize the global structure, we plot the dendrogram for the selected approach.
+
+```{r echo=FALSE, out.width="60%", fig.align="center"}
+plot(hc_main,
+     labels = FALSE,
+     hang   = -1,
+     main   = "Dendogram",
+     xlab   = "",
+     ylab   = "Height")
+abline(h = pretty(hc_main$height), col = "grey90", lty = 3)
+```
+
+
+### Choosing the number of clusters
+
+Once a hierarchical tree has been obtained, we still need to decide at which height to cut the dendrogram in order to obtain a final partition. \
+
+The rule called *rule-of-thumb* suggests that a reasonable number of clusters is
+\[
+k_{\text{thumb}} \approx \sqrt{n/2},
+\]
+where \(n\) is the number of observations. In our case  \(n = \) `r nrow(data_nba)   `, which would give a value around \(\sqrt{402/2} \approx 14\) clusters. However, such a large number of groups would result in a very fragmented typology of players, which is not particularly useful for interpretation.
+
+
+```{r echo=FALSE}
+n_players <- nrow(nba_mixed)
+k_thumb <- sqrt(n_players / 2)
+```
+
+```{r}
+k_thumb
+```
+
+
+Therefore, our strategy is to combine this rule-of-thumb with a visual inspection of the dendrogram. In practice, we inspect several candidate cuts and choose a value of \(k\) that yields a small number of reasonably balanced clusters and a clear separation between them. 
+
+
+```{r echo = FALSE}
+
+candidate_k <- 3:15
+
+cluster_sizes <- sapply(candidate_k, function(k) {
+  table(cutree(hc_main, k = k))
+})
+```
+
+
+```{r echo=FALSE}
+
+sizes_str <- sapply(cluster_sizes, function(tab) {
+  paste(as.vector(tab), collapse = ", ")
+})
+
+sizes_df <- data.frame(
+  k     = candidate_k,
+  sizes = sizes_str,
+  row.names = NULL
+)
+
+kable(
+  sizes_df,
+  caption = "Cluster sizes for different numbers of clusters k."
+)
+```
+
+
+For small values of \(k\) (e.g. \(k = 3,4,5\)), the partition is dominated by one very large cluster plus a few tiny groups. As \(k\) increases, several medium-sized clusters appear, more medium-sized clusters appear, but a number of very small clusters remains.\
+
+Following this, we start from  \(k = 14\) (rule-of-thumb) and merge all clusters with fewer than 5 players into a single “Outliers” group. This keeps the informative “main” typologies while avoiding an excessive fragmentation into many 1–4 player clusters, which are better interpreted as rare profiles.
+
+
+```{r echo=FALSE}
+
+k <- 14
+clusters_k <- cutree(hc_main, k = k)
+
+min_size <- 5
+tab_sizes <- table(clusters_k)
+main_ids <- names(tab_sizes[tab_sizes >= min_size])
+
+clusters_final <- as.character(clusters_k)
+clusters_final[!(clusters_final %in% main_ids)] <- "Outliers"
+clusters_final <- factor(clusters_final)
+
+table(clusters_final)
+
+```
+
+
+```{r echo=FALSE, out.width="80%", fig.align="center"}
+
+dend <- as.dendrogram(hc_main)
+dend <- color_branches(dend, k = k)
+labels(dend) <- rep("", length(labels(dend)))
+
+plot(dend,
+     main = "Robust Gower + average linkage",
+     ylab = "Merge height)",
+     xlab = "Players")
+```
+
+This figure shows the dendrogram obtained from robust Gower dissimilarities using average linkage, cut at k=14 taking into account the merged clusters. The merge height represents the dissimilarity level at which groups are combined: low merges indicate very similar players, while high merges correspond to markedly different profiles.\
+
+The cut reveals a dominant core cluster (purple block,  n=292, about 73% of the sample), whose internal merges mostly occur at relatively low heights, suggesting that most players form a relatively homogeneous “main population” under the mixed-type distance. The remaining players are split into six smaller clusters (sizes 8–24) capturing more specific profiles, and an Outliers group (n=18) formed by aggregating clusters with fewer than 5 players. These outlying profiles only connect to the rest at high merge heights, indicating rare or extreme combinations of characteristics.\
+
+
+Overall, the dendrogram suggests that hierarchical clustering recovers a large core of broadly similar players and a set of smaller, clearly separated groups that behave like outlying or specialized profiles. This visual evidence supports the later decision to keep a small number of interpretable “main” clusters and treat very small clusters as an outliers/rare-profiles group, rather than reporting 14 clusters of which many are too small to interpret reliably.
+
+
+## Non-hierarchical clustering
+
+### k-means
+
+
+In this part of the assignment, we are going to work in another approach of clustering: non-hierarchical clustering. This procedures has many variation, in particular we are going to focus on k-means algorithm. This method groups observations into a pre-specified number of clusters $k$ without building a nested tree structure (unlike hierarchical methods). This approach iteratively assigns each observation to the nearest cluster centroid (typically using Euclidean distance) and updates centroids to minimize the within-cluster sum of squares (WCSS).\
+
+Therefore, we restrict the input to the quantitative features (age, height, weight, draft number, games played, points, rebounds, assists and true shooting percentage) and standardize them to mean 0 and standard deviation 1 so that no variable dominates the Euclidean distance due to scale differences. The key practical decision is choosing (k), often guided by criteria such as the elbow method (WCSS vs. $k$) and the silhouette index, balancing statistical fit with interpretability.\
+
+
+
+```{r echo=FALSE}
+X_km <- data_nba [,vars_num]
+
+X_km_scaled <- scale(X_km)  
+
+D_euc <- dist(X_km_scaled)
+```
+
+#### Choosing $k$\
+
+
+To choose the number of clusters $k$, we run k-means for a grid of values $k=2,\dots,K_{\max}$. For each solution, we compute the total WCSS (elbow method) and the average silhouette width. The elbow plot identifies diminishing returns in WCSS when increasing $k$, while the silhouette summarizes cohesion/separation of the partition. We select a value of $k$ that combines a clear elbow, reasonably high silhouette, and interpretability in terms of player archetypes. 
+
+
+```{r echo=FALSE, out.width="60%", fig.align="center"}
+set.seed(123)
+
+k_grid <- 2:14
+wcss <- numeric(length(k_grid))
+sil_avg <- numeric(length(k_grid))
+
+for (i in seq_along(k_grid)) {
+  k <- k_grid[i]
+  km <- kmeans(X_km_scaled, centers = k, nstart = 50, iter.max = 100)
+  wcss[i] <- km$tot.withinss
+  sil_avg[i] <- mean(silhouette(km$cluster, D_euc)[, "sil_width"])
+}
+
+k_diagnostics <- data.frame(
+  k = k_grid,
+  WCSS = wcss,
+  Silhouette = sil_avg
+)
+par(mfrow = c(1, 2))
+# Plots
+g1=ggplot(k_diagnostics, aes(x = k, y = WCSS)) +
+   geom_line(color = "#2C7FB8", linewidth = 1) +
+  geom_point(color = "#2C7FB8", size = 2) +
+  labs(title = "Elbow plot", x = "k", y = "WCSS")
+
+g2=ggplot(k_diagnostics, aes(x = k, y = Silhouette)) +
+   geom_line(color = "#F39C12", linewidth = 1) +
+  geom_point(color = "#F39C12", size = 2) +
+  labs(title = "Average silhouette width", x = "k", y = "Avg silhouette")
+
+(g1 | g2)
+
+par(mfrow = c(1, 1)) 
+# Suggested k (purely silhouette-based; you still choose by elbow + interpretability)
+k_sil <- k_diagnostics$k[which.max(k_diagnostics$Silhouette)]
+
+```
+The elbow curve shows a clear decrease in WCSS for small $k$. The average silhouette width is maximized at $k=2$ (and similarly high at $k=3$), suggesting that a two–three cluster solution yields the best overall separation. However, these $k$ values correspond to a very high WCSS.Between this two values, it seems that $k=3$ maintains a correct average silhouette while decreasing notably the WCSS, so this would be our choice.\
+
+We can also considerate $k=8$, it corresponds to a local maximum of the silhouette curve while providing a smaller value of the within cluster SS. Furthermore, this value is consistent with the structure suggested by hierarchical clustering, mantaining a similar level of granularity. Importantly, silhouette values are overall moderate (0.16–0.19), indicating that cluster separation is not extremely sharp and that players form a relatively continuous spectrum.\
+
+We now run the function for $k=3$ and $k=8$, and present the results side-by-side. This allows us to compare both solutions using the same metrics and to see how the level of granularity affects silhouette quality and the distribution of players across clusters.\
+
+Using the selected $k$, we refit k-means with many random initializations to reduce sensitivity to local minima. We report cluster sizes, WCSS, and the average silhouette width. Finally, we inspect the silhouette plot to identify well-assigned observations and potential overlaps between clusters.
+
+
+```{r echo=FALSE}
+run_kmeans_report <- function(X_scaled, D, k, seed = 123, nstart = 100, iter.max = 200) {
+  set.seed(seed)
+  km <- kmeans(X_scaled, centers = k, nstart = nstart, iter.max = iter.max)
+
+  sil <- silhouette(km$cluster, D)
+  avg_sil <- mean(sil[, "sil_width"])
+
+  summary_tbl <- data.frame(
+    Metric = c("k (number of clusters)", "Total WCSS", "Average silhouette"),
+    Value  = c(k,
+              round(km$tot.withinss, 2),
+              round(avg_sil, 4))
+  )
+
+  sizes_tbl <- data.frame(
+    Cluster = seq_along(km$size),
+    Size    = km$size
+  )
+  sizes_tbl$Percent <- round(100 * sizes_tbl$Size / sum(sizes_tbl$Size), 2)
+
+  list(km = km, sil = sil, avg_sil = avg_sil,
+       summary_tbl = summary_tbl, sizes_tbl = sizes_tbl)
+}
+```
+
+
+```{r echo = FALSE}
+res_k3 <- run_kmeans_report(X_km_scaled, D_euc, k = 3)
+```
+
+```{r echo=FALSE}
+kable(res_k3$summary_tbl, caption = "K-means summary (k = 3)")
+kable(res_k3$sizes_tbl,   caption = "Cluster sizes (k = 3)")
+data_nba$cluster_k3 <- factor(res_k3$km$cluster)
+```
+
+```{r echo = FALSE}
+res_k8 <- run_kmeans_report(X_km_scaled, D_euc, k = 8)
+
+```
+
+```{r echo=FALSE}
+
+kable(res_k8$summary_tbl, caption = "K-means summary (k = 8)")
+kable(res_k8$sizes_tbl,   caption = "Cluster sizes (k = 8)")
+
+data_nba$cluster_k8 <- factor(res_k8$km$cluster)
+
+```
+
+
+For each candidate $k$, we visualize the clustering result using a 2D projection on PC1–PC2 (for interpretability) and the corresponding silhouette plot (for cluster quality). Note that the PCA projection is used only for visualization; k-means is still fitted in the full standardized feature space.
+
+```{r echo=FALSE, out.width="60%", fig.align="center"}
+
+plot_kmeans_with_sil <- function(X_scaled, km) {
+  cl <- km$cluster
+  k  <- nrow(km$centers)
+
+  # PCA only for 2D visualization
+  pca <- prcomp(X_scaled, center = FALSE, scale. = FALSE)
+  X2 <- pca$x[, 1:2]
+  centers2 <- as.matrix(km$centers) %*% pca$rotation[, 1:2]
+
+  # Silhouette in the original clustering space
+  sil <- silhouette(cl, dist(X_scaled))
+  avg <- mean(sil[, "sil_width"])
+  
+
+  par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+
+  # (1) Scatter (PC1-PC2)
+  plot(X2, col = cl, pch = 19,
+       xlab = "PC1", ylab = "PC2",
+       main = paste0("k-means", " (k=", k, ")"))
+  points(centers2, pch = 3, cex = 2, lwd = 3)
+
+  # (2) Silhouette
+  plot(sil, col = cl, border = NA,
+       main = paste0("Silhouette"))
+  abline(v = avg, lty = 2)
+
+  par(mfrow = c(1, 1))
+  invisible(list(sil = sil, avg = avg))
+}
+
+
+set.seed(123)
+km_k3 <- kmeans(X_km_scaled, centers = 3, nstart = 100, iter.max = 200)
+km_k8 <- kmeans(X_km_scaled, centers = 8, nstart = 100, iter.max = 200)
+data_nba$cluster_k3 <- factor(km_k3$cluster)
+data_nba$cluster_k8 <- factor(km_k8$cluster)
+
+plot_kmeans_with_sil(X_km_scaled, km_k3)
+plot_kmeans_with_sil(X_km_scaled, km_k8)
+
+```
+The $k=3$ partition yields the highest overall silhouette and produces reasonably balanced cluster sizes, which supports it as a stable “macro-structure” of the data. In contrast, the $k=8$ solution reduces the average silhouette and introduces small and weakly separated clusters (including one very small cluster), indicating potential over-partitioning of overlapping regions. Therefore, we retain $k=3$ as the main result for a robust and interpretable clustering.\
+
+
+We also summarize clusters using within-cluster means in the original variables to interpret them as player archetypes.
+```{r echo=FALSE}
+cluster_profile <- data_nba %>%
+  group_by(cluster_k3) %>%
+  summarise(
+    n = n(),
+    across(all_of(vars_num), ~ mean(.x, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+cluster_profile %>%
+  kable(
+    digits = 2,                        # round to 2 decimal places
+    caption = "Clusters profile (mean)",
+    align = "c",                       
+    format.args = list(big.mark = ",") # thousands separator
+  )
+
+```
+
+
+We can observe that Cluster 1 (n=116) groups taller and heavier players with higher rebounds and player’s shooting efficiency. Cluster 2 (n=186) contains younger, average-sized players with low points, rebounds, and assists, suggesting a low-usage/role-player profile and the lowest TS%. Finally, Cluster 3 (n=100) is characterized by the highest scoring and playmaking (18 pts, 4.9 ast) with smaller body size. Overall, these profiles support (k=3) as a interpretable segmentation into broad player archetypes.
+
+#### K-mean on PCA\
+
+Given the correlation structure observed in Task 1, clustering directly on the original variables may overweight redundant directions of variation. We therefore perform k-means also on PCA scores, which provide an orthogonal representation and allow a lower-dimensional summary of the players. Given the results of the previous task, we retain the first 4 components and run k-means in this reduced space.
+
+
+```{r echo=FALSE, out.width="60%", fig.align="center"}
+# PCA on standardized data (equiv. to correlation PCA)
+pca <- prcomp(X_km_scaled, scale = TRUE)
+m=4
+
+X_pca <- pca$x[, 1:m]
+D_pca <- dist(X_pca)
+
+# Run the same diagnostics on PCA scores
+set.seed(123)
+k_grid <- 2:14
+wcss_p <- numeric(length(k_grid))
+sil_p <- numeric(length(k_grid))
+
+for (i in seq_along(k_grid)) {
+  k <- k_grid[i]
+  km <- kmeans(X_pca, centers = k, nstart = 50)
+  wcss_p[i] <- km$tot.withinss
+  sil_p[i] <- mean(silhouette(km$cluster, D_pca)[, "sil_width"])
+}
+
+k_diag_pca <- data.frame(k = k_grid, WCSS = wcss_p, Silhouette = sil_p)
+
+
+
+
+par(mfrow = c(1, 2))
+# Plots
+g1=ggplot(k_diag_pca, aes(x = k, y = WCSS)) +
+   geom_line(color = "#2C7FB8", linewidth = 1) +
+  geom_point(color = "#2C7FB8", size = 2) +
+  labs(title = "Elbow plot", x = "k", y = "WCSS")
+
+g2=ggplot(k_diag_pca, aes(x = k, y = Silhouette)) +
+   geom_line(color = "#F39C12", linewidth = 1) +
+  geom_point(color = "#F39C12", size = 2) +
+  labs(title = "Average silhouette width", x = "k", y = "Avg silhouette")
+
+(g1 | g2)
+
+par(mfrow = c(1, 1)) 
+
+```
+
+According to this graphics, we now fit k-means in the PCA space, keeping  $k=3$.
+
+```{r echo=FALSE, out.width="60%", fig.align="center"}
+
+k_pca <- 3 
+
+set.seed(123)
+km_pca <- kmeans(X_pca, centers = k_pca, nstart = 100, iter.max = 200)
+
+sil_pca_final <- silhouette(km_pca$cluster, D_pca)
+avg_sil_pca <- mean(sil_pca_final[, "sil_width"])
+
+
+summary_tbl <- data.frame(
+  Metric = c("k (number of clusters)", "Total WCSS", "Average silhouette"),
+  Value  = c(nrow(km_pca$centers),
+             round(km_pca$tot.withinss, 2),
+             round(avg_sil_pca, 4))
+)
+
+kable(summary_tbl, caption = "K-means summary")
+
+sizes_tbl <- data.frame(
+  Cluster = seq_along(km_pca$size),
+  Size    = km_pca$size
+)
+sizes_tbl$Percent <- round(100 * sizes_tbl$Size / sum(sizes_tbl$Size), 2)
+kable(sizes_tbl, caption = "Cluster sizes")
+
+
+data_nba$cluster_pca <- factor(km_pca$cluster)
+
+```
+The following plot shows the clustering in PCA coordinates together with silhouette information.
+
+```{r echo=FALSE, out.width="80%", fig.align="center"}
+
+plot_kmeans_with_sil(X_pca, km_pca)
+
+```
+
+Finally, we compute the clusters profile to interpret the groups.
+```{r echo=FALSE}
+
+cluster_profile <- data_nba %>%
+  group_by(cluster_pca) %>%
+  summarise(
+    n = n(),
+    across(all_of(vars_num), ~ mean(.x, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+
+cluster_profile %>%
+  kable(
+    digits = 2,                        
+    caption = "Clusters profile (mean)", 
+    align = "c",                       
+    format.args = list(big.mark = ",") 
+  )
+```
+
+Interestingly, the PCA-based diagnostics also support $k=3$ ,with an average silhouette that is comparable with the one in the raw standardized space, suggesting that the three-cluster structure is robust to the representation used. Moreover, when mapping clusters back to the original variables, the PCA-based partition yields very similar player archetypes to those found with k-means on the standardized features, indicating that the main segmentation is not an artifact of correlated inputs.\
+
+
+In this case, Cluster 1 groups taller and heavier players with clearly higher rebounding and scoring output and the best shooting efficiency, which is consistent with an interior/big-man archetype. Cluster 2 consists of younger, smaller and lighter players with comparatively lower production across points and rebounds and the lowest shooting efficiency, suggesting a low-usage/role-player profile. Finally, Cluster 3 is characterized by older players with substantially higher scoring which aligns with an experienced, scorer profile.\
+
+Minor differences in cluster sizes are expected due to the different feature space used for optimization, but the substantive interpretation remains stable.
+
+
+
+### k-medoids (PAM)
+
+To complement k-means, we also consider k-medoids clustering (PAM). Unlike k-means, which represents each cluster by a centroid (not necessarily an observed player), PAM represents each cluster by a medoid, this is, an actual observation minimizing within-cluster dissimilarity. This makes the method more robust to outliers and allows the use of general distance measures beyond Euclidean.
+
+```{r echo=FALSE}
+k <- 3
+pam_euc <- pam(D_euc, k = k, diss = TRUE)
+
+sil_pam_euc <- silhouette(pam_euc$clustering, D_euc)
+avg_sil_pam_euc <- mean(sil_pam_euc[, "sil_width"])
+
+```
+
+```{r echo=FALSE, out.width="60%", fig.align="center"}
+plot_pam_with_sil <- function(D, pam_fit, main_prefix = "PAM") {
+  cl <- pam_fit$clustering
+  med <- pam_fit$medoids
+  coords <- cmdscale(D, k = 2)
+  sil <- silhouette(cl, D)
+  avg <- mean(sil[, "sil_width"])
+
+  par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+
+  plot(coords, col = cl, pch = 19,
+       xlab = "MDS1", ylab = "MDS2",
+       main = paste0(main_prefix, " (k=", length(unique(cl)), ")"))
+  points(coords[med, 1], coords[med, 2], pch = 8, cex = 2, lwd = 2) # medoids as stars
+
+  plot(sil, col = cl, border = NA,
+       main = paste0("Silhouette (avg=", round(avg, 4), ")"))
+  abline(v = avg, lty = 2)
+
+  par(mfrow = c(1, 1))
+  invisible(list(avg = avg, sil = sil))
+}
+
+plot_pam_with_sil(D_euc, pam_euc, main_prefix = "PAM (Euclidean)")
+
+```
+
+```{r echo = FALSE}
+X <- as.matrix(X_km_scaled)
+S <- cov(X)
+R <- chol(S)          # R'R = S
+X_whiten <- X %*% R       # Euclidean on X_whiten == Mahalanobis on X
+D_maha <- dist(X_whiten)
+```
+
+```{r echo=FALSE, out.width="60%", fig.align="center"}
+
+pam_maha <- pam(D_maha, k = 3, diss = TRUE)
+plot_pam_with_sil(D_maha, pam_maha, main_prefix = "PAM (Mahalanobis)")
+
+```
+
+We applied PAM with $k=3$ using both Euclidean and Mahalanobis-type dissimilarities. The average silhouette widths are modest (around 0.17) and comparable to the k-means solution, indicating that cluster separation is overall weak and that players form overlapping profiles rather than well-separated groups.\
+
+Using Euclidean distance, PAM yields a partition broadly consistent with the previous k-means result, but with slightly lower silhouette. When accounting for covariance structure via a Mahalanobis-type distance, the silhouette decreases marginally, suggesting that correcting for correlation does not reveal a sharper clustering structure in this dataset. Overall, PAM serves as a complementary validation step, while k-means $k=3$ remains the preferred solution due to its interpretability and slightly better silhouette.
+
+
+
+## Conclusions 
+
+Using mixed-type dissimilarities, hierarchical clustering with robust Gower + average linkage provided the best distance preservation (highest cophenetic correlation) and revealed a structure dominated by a large “core” cluster plus several small, highly distinct groups, which we summarized as rare/outlying profiles. \
+
+Complementarily, non-hierarchical methods offered a more interpretable segmentation. In the standardized quantitative space, k-means with $k=3$ achieved the most stable trade-off between silhouette and interpretability, yielding three clear player archetypes (a taller/heavier rebound-efficient group, a low-usage/low-production group, and a higher-scoring/playmaking group). Running k-means on PCA scores reinforced this three-cluster structure and improved separation, suggesting that the segmentation is not driven purely by collinearity in the original variables. \
+
+Finally, PAM produced comparable (though modest) silhouette values, supporting the conclusion that NBA player profiles form a partly continuous spectrum with overlapping groups rather than perfectly separated clusters. Overall, the main actionable outcome is a robust and interpretable typology at two resolutions, a fine hierarchical view highlighting rare profiles and a $k=3$ partition capturing the dominant player archetypes. 
+
+
+
