@@ -35,7 +35,7 @@ The analysis is split into two tasks:
 ```
 ├── data/
 │   └── nba_2022_23.csv          # Preprocessed dataset (402 players, 2022–23 season)
-├── analysis/
+├── source/
 │   ├── 01_eda.Rmd               # Data preprocessing and exploratory analysis
 │   ├── 02_pca.Rmd               # PCA: eigendecomposition, component selection, stability
 │   └── 03_mds_clustering.Rmd   # MDS, hierarchical clustering, k-means, PAM
